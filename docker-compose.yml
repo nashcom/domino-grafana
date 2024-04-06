@@ -10,38 +10,6 @@ services:
     restart: always
     stop_grace_period: 15s
 
-    environment:
-      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
-
-    entrypoint:
-      - sh
-      - -euc
-      - |
-        mkdir -p /etc/grafana/provisioning/datasources
-        cat <<EOF > /etc/grafana/provisioning/datasources/ds.yaml
-        apiVersion: 1
-        datasources:
-        - name: Prometheus
-          type: prometheus
-          access: proxy
-          url: http://prometheus:9090
-          basicAuth: false
-          isDefault: true
-          version: 1
-          editable: true
-
-        - name: Loki
-          type: loki
-          access: proxy
-          url: http://loki:3100
-          basicAuth: false
-          isDefault: false
-          version: 1
-          editable: true
-
-        EOF
-        /run.sh
-
     volumes:
       - /local/grafana-data:/var/lib/grafana
 
