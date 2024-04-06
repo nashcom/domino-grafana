@@ -18,6 +18,9 @@ $(TARGET): $(OBJECT)
 $(OBJECT): $(SOURCE)
 	$(CC) $(CCOPTS) $(DEFINES) -I$(INCDIR) $(SOURCE) -o $(OBJECT)
 
+install:
+	cp -f $(TARGET) /opt/hcl/domino/notes/latest/linux/$(PROGRAM)
+	chmod 755  /opt/hcl/domino/notes/latest/linux/$(PROGRAM)
 clean:
 	rm -f *.o
 	rm -f ./$(TARGET)

@@ -1,3 +1,36 @@
+/*
+###########################################################################
+# Domino Prometheus Exporter                                              #
+# Version 0.9.0 06.04.2024                                                #
+# (C) Copyright Daniel Nashed/Nash!Com 2024                               #
+#                                                                         #
+# Licensed under the Apache License, Version 2.0 (the "License");         #
+# you may not use this file except in compliance with the License.        #
+# You may obtain a copy of the License at                                 #
+#                                                                         #
+#      http://www.apache.org/licenses/LICENSE-2.0                         #
+#                                                                         #
+# Unless required by applicable law or agreed to in writing, software     #
+# distributed under the License is distributed on an "AS IS" BASIS,       #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.#
+# See the License for the specific language governing permissions and     #
+# limitations under the License.                                          #
+#                                                                         #
+#                                                                         #
+###########################################################################
+*/
+
+#define DOMPROM_VERSION    "0.9.0"
+#define DOMPROM_COPYRIGHT  "Copyright Daniel Nashed/Nash!Com 2024"
+#define DOMPROM_GITHUB_URL "https://github.com/nashcom/domino-grafana"
+
+#define ENV_DOMPROM_LOGLEVEL "domprom_loglevel"
+#define ENV_DOMPROM_OUTFILE  "domprom_outfile"
+#define ENV_DOMPROM_INTERVAL "domprom_interval"
+
+#define DOMPROM_DEFAULT_INTERVAL 30
+#define DOMPROM_MINIMUM_INTERVAL 10
+
 
 /* Includes */
 
@@ -12,16 +45,6 @@
 #include <intl.h>
 #include <osfile.h>
 #include <osenv.h>
-
-#define DOMPROM_VERSION "0.9.0"
-
-#define ENV_DOMPROM_LOGLEVEL "domprom_loglevel"
-#define ENV_DOMPROM_OUTFILE  "domprom_outfile"
-#define ENV_DOMPROM_INTERVAL "domprom_interval"
-
-#define DOMPROM_DEFAULT_INTERVAL 30
-#define DOMPROM_MINIMUM_INTERVAL 10
-
 
 /* Types */
 
@@ -48,10 +71,13 @@ struct CONTEXT_STRUCT_TYPE
 
 /* Globals */
 
-char  g_szVersion [] = DOMPROM_VERSION;
-char  g_szTask[] = "domprom";
-char  g_szTaskLong[] = "Prometheus Exporter";
+char  g_szVersion[]     = DOMPROM_VERSION;
+char  g_szCopyright[]   = DOMPROM_COPYRIGHT;
+char  g_szGitHubURL[]   = DOMPROM_GITHUB_URL;
+char  g_szTask[]        = "domprom";
+char  g_szTaskLong[]    = "Prometheus Exporter";
 char  g_szDataDir[MAXPATH+1] = {0};
+
 WORD  g_ShutdownPending = 0;
 LONG  g_LogLevel        = 1;
 DWORD g_dwInterval      = DOMPROM_DEFAULT_INTERVAL;
@@ -394,6 +420,7 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
     GetEnvironmentVars (TRUE);
 
     AddInLogMessageText ("%s: Domino Prometheus Exporter %s (Interval: %u seconds, File: %s)", 0, g_szTask, g_szVersion, g_dwInterval, szStatsFilename);
+    AddInLogMessageText ("%s: %s (%s)", 0, g_szTask, g_szCopyright, g_szGitHubURL);
 
     AddInSetStatusText ("Ready");
 
