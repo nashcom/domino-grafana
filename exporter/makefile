@@ -1,7 +1,7 @@
 PROGRAM=domprom
 TARGET=bin/linux64/domprom
 SOURCE= $(PROGRAM).cpp
-OBJECT = $(0).o
+OBJECT = $(PROGRAM).o
 
 CC=g++
 CCOPTS=-c -m64
