@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 60s
+
+scrape_configs:
+- job_name: domino
+  scheme: https
+  tls_config:
+    insecure_skip_verify: true
+  static_configs:
+  - targets: ['notes.nashcom.de:443']
+    labels:
+      DominoServer: 'notes.nashcom.de'
+
+- job_name: linux
+  static_configs:
+  - targets: ['notes.nashcom.de:9100']
+    labels:
+      DominoServer: 'notes.nashcom.de'
+

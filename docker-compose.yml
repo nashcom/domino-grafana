@@ -1,0 +1,113 @@
+version: '3.8'
+
+services:
+
+  grafana:
+
+    image: grafana/grafana-enterprise
+    container_name: grafana
+    hostname: grafana
+    restart: always
+    stop_grace_period: 15s
+
+    environment:
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+
+    entrypoint:
+      - sh
+      - -euc
+      - |
+        mkdir -p /etc/grafana/provisioning/datasources
+        cat <<EOF > /etc/grafana/provisioning/datasources/ds.yaml
+        apiVersion: 1
+        datasources:
+        - name: Prometheus
+          type: prometheus
+          access: proxy
+          url: http://prometheus:9090
+          basicAuth: false
+          isDefault: true
+          version: 1
+          editable: true
+
+        - name: Loki
+          type: loki
+          access: proxy
+          url: http://loki:3100
+          basicAuth: false
+          isDefault: false
+          version: 1
+          editable: true
+
+        EOF
+        /run.sh
+
+    volumes:
+      - /local/grafana-data:/var/lib/grafana
+
+    networks:
+      grafana_net:
+
+  prometheus:
+
+    image: prom/prometheus
+    container_name: prometheus
+    hostname: prometheus
+    restart: always
+    stop_grace_period: 15s
+
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:z
+      - /local/prometheus-data:/prometheus
+
+    networks:
+      grafana_net:
+
+  loki:
+    image: grafana/loki:latest
+    container_name: loki
+
+    volumes:
+      - ./loki-config.yml:/loki-config.yml
+      - /local/loki-data:/tmp/loki
+
+    ports:
+      - "3100:3100"
+
+    command: -config.file=/loki-config.yml
+
+    networks:
+      grafana_net:
+
+  nginx:
+
+    image: nginx
+    container_name: grafana-nginx
+    hostname: grafana-nginx
+    stop_grace_period: 15s
+
+    ports:
+      - 3000:443
+
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:z
+      - /local/certs:/certs
+
+    networks:
+      grafana_net:
+
+volumes:
+
+  grafana-data:
+    external: false
+
+  prometheus-data:
+    external: false
+
+  loki-data:
+    external: false
+
+networks:
+
+  grafana_net:
+    driver: bridge
