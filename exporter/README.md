@@ -1,6 +1,9 @@
 # Domino Prometheus log exporter (domprom)
 
-**domprom** is a small C-API based servertask, collecting all LONG and NUMBER statistics from the Domino server to present them in a file on disk with Prometheus compatible metrics names.
+**domprom** is a small C-API based servertask, collecting all `LONG` and `NUMBER` statistics from the Domino server to present them in a file on disk with Prometheus compatible metrics names.
+
+Note: Garfana and Prometheus can only handle numeric data. Text and Timedate data cannot be added. In future it could make sense to add **labels** to statistics. But that's not part of the first deliverable.
+
 The resulting file can be used to either present them via HTML directory directly via HTTP as an end-point to a Prometheus server. Or include the data via [Prometheus Node Exporter for Linux](https://prometheus.io/docs/guides/node-exporter/).
 
 
