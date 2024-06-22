@@ -1,6 +1,6 @@
 ###########################################################################
 # systemd Service - Prometheus Node Exporter                              #
-# Version 1.0.0 04.04.2024                                                #
+# Version 1.0.1 22.06.2024                                                #
 #                                                                         #
 # (C) Copyright Daniel Nashed/NashCom 2024                                #
 # Feedback domino_unix@nashcom.de                                         #
@@ -25,7 +25,10 @@ After=syslog.target network.target
 
 [Service]
 Type=exec
-ExecStart=/usr/bin/node_exporter
+User=notes
+ExecStart=/usr/bin/node_exporter --collector.textfile.directory=/local/notesdata/domino
+StandardOutput=file:/tmp/node_exporter.log
+StandardError=file:/tmp/node_exporter_error.log
 
 [Install]
 WantedBy=multi-user.target

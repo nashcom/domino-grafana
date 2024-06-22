@@ -1,5 +1,5 @@
 PROGRAM=domprom
-TARGET=bin/linux64/domprom
+TARGET=domprom
 SOURCE= $(PROGRAM).cpp
 OBJECT = $(PROGRAM).o
 
@@ -24,3 +24,8 @@ install:
 clean:
 	rm -f *.o
 	rm -f ./$(TARGET)
+
+publish: all
+	mkdir -p /local/software/nashcom.de/domino-bin
+	cp -f ./$(TARGET) /local/software/nashcom.de/domino-bin
+

@@ -41,3 +41,16 @@ All environment variables are optional. The settings should be OK for most envir
 - **domprom_loglevel <n>** Log Level
 - **domprom_outfile <filename>** custom output file name (Default: domino/domino.prom in data directory)
 - **domprom_interval <sec>** custom interval in seconds to update the statistic file (default: 30, min: 10)
+
+
+# Install and configure Node Exporter on Linux
+
+Run the Node Exporter installation script `install_node_exporter.sh`.
+It will download Node Exporter and install the service.
+
+Afterwards you might want to change the configuration in systemd file.
+The default configuration looks for `*.prom` files in Domino data directory.
+
+```
+ExecStart=/usr/bin/node_exporter --collector.textfile.directory=/local/notesdata/domino
+```
