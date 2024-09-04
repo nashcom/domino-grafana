@@ -1,8 +1,8 @@
 #!/bin/bash
 
 
-DOWNLOAD_URL=https://github.com/prometheus/node_exporter/releases/download/v1.7.0/node_exporter-1.7.0.linux-amd64.tar.gz
-DOWNLOAD_HASH=a550cd5c05f760b7934a2d0afad66d2e92e681482f5f57a917465b1fba3b02a6
+DOWNLOAD_URL=https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-amd64.tar.gz
+DOWNLOAD_HASH=6809dd0b3ec45fd6e992c19071d6b5253aed3ead7bf0686885a51d85c6643c66
 
 
 SYSTEMD_NAME=node_exporter
@@ -101,8 +101,9 @@ if [ ! -e node_exporter ]; then
   exit 1
 fi
 
-mv -f node_exporter /usr/bin/node_exporter
-chmod 755 /usr/bin/node_exporter
+# Binary needs to be located in /usr/sbin because of SELinux permissions
+mv -f node_exporter /usr/sbin/node_exporter
+chmod 755 /usr/sbin/node_exporter
 
 cp $SYSTEMD_FILE $SYSTEMD_FILEPATH
 chown root:root $SYSTEMD_FILEPATH
