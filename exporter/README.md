@@ -18,15 +18,25 @@ The directory contains a the **makefile** for Linux and also a **mswin64.mak** f
 make
 ```
 
-The resulting file can be found in the **bin/linux64** directory and need to be copied to the Domino binary directory.
+The resulting file can be found in the main directory and need to be copied to the Domino binary directory.
+
+To install the file on a Domino server use the following commands
+
+```
+cp domprom /opt/hcl/domino/notes/latest/linux
+chmod 755 /opt/hcl/domino/notes/latest/linux/domprom
+cd /opt/hcl/domino/bin
+ln -s tools/startup domprom
+```
+
 
 ### Windows command-line
 
 ```
-make -f mswin64.mak
+nmake -f mswin64.mak
 ```
 
-The resulting file can be found in the **bin/w64** directory and need to be copied to the Domino binary directory.
+The resulting file can be found in the main directory and need to be copied to the Domino binary directory.
 
 
 ## Command line parameters
@@ -34,13 +44,19 @@ The resulting file can be found in the **bin/w64** directory and need to be copi
 There are currently no command-line parameters required
 
 
-## Environment variables
+## Domino Environment variables
 
-All environment variables are optional. The settings should be OK for most environments.
+All environment variables are optional. The default settings should be OK for most environments.
 
 - **domprom_loglevel <n>** Log Level
-- **domprom_outfile <filename>** custom output file name (Default: domino/domino.prom in data directory)
+- **domprom_outdir <dirname>** custom output directory (Default: **domino/stats/domino** in data directory)
+- **domprom_outfile <filename>** custom output file name (Default: **domino/stats/domino.prom** in data directory)
 - **domprom_interval <sec>** custom interval in seconds to update the statistic file (default: 30, min: 10)
+
+
+## Windows/Linux Environment variables
+
+- **DOMINO_PROM_STATS_DIR** custom directory for reading stats. Overwritten by Domino environment variables if specified
 
 
 # Install and configure Node Exporter on Linux
@@ -48,9 +64,8 @@ All environment variables are optional. The settings should be OK for most envir
 Run the Node Exporter installation script `install_node_exporter.sh`.
 It will download Node Exporter and install the service.
 
-Afterwards you might want to change the configuration in systemd file.
-The default configuration looks for `*.prom` files in Domino data directory.
+Ensure the configuration in systemd file is in sync with the Domino configuration.
 
 ```
-ExecStart=/usr/bin/node_exporter --collector.textfile.directory=/local/notesdata/domino
+ExecStart=/usr/bin/node_exporter --collector.textfile.directory=/local/notesdata/domino/stats
 ```

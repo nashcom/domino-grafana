@@ -1,7 +1,7 @@
 /*
 ###########################################################################
 # Domino Prometheus Exporter                                              #
-# Version 0.9.0 06.04.2024                                                #
+# Version 0.9.1 16.11.2024                                                #
 # (C) Copyright Daniel Nashed/Nash!Com 2024                               #
 #                                                                         #
 # Licensed under the Apache License, Version 2.0 (the "License");         #
@@ -20,13 +20,15 @@
 ###########################################################################
 */
 
-#define DOMPROM_VERSION    "0.9.0"
+#define DOMPROM_VERSION    "0.9.1"
 #define DOMPROM_COPYRIGHT  "Copyright Daniel Nashed/Nash!Com 2024"
 #define DOMPROM_GITHUB_URL "https://github.com/nashcom/domino-grafana"
 
-#define ENV_DOMPROM_LOGLEVEL "domprom_loglevel"
-#define ENV_DOMPROM_OUTFILE  "domprom_outfile"
-#define ENV_DOMPROM_INTERVAL "domprom_interval"
+#define ENV_DOMPROM_LOGLEVEL      "domprom_loglevel"
+#define ENV_DOMPROM_STATS_DIR     "domprom_outdir"
+#define ENV_DOMPROM_OUTFILE       "domprom_outfile"
+#define ENV_DOMPROM_INTERVAL      "domprom_interval"
+#define ENV_OS_DOMPROM_STATS_DIR  "DOMINO_PROM_STATS_DIR"
 
 #define DOMPROM_DEFAULT_INTERVAL 30
 #define DOMPROM_MINIMUM_INTERVAL 10
@@ -36,6 +38,9 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/stat.h>
 
 #include <global.h>
 #include <addin.h>
@@ -76,13 +81,20 @@ char  g_szCopyright[]   = DOMPROM_COPYRIGHT;
 char  g_szGitHubURL[]   = DOMPROM_GITHUB_URL;
 char  g_szTask[]        = "domprom";
 char  g_szTaskLong[]    = "Prometheus Exporter";
+char  g_szDominoProm[] = "domino.prom";
 char  g_szDataDir[MAXPATH+1] = {0};
+
+#ifdef _WIN32
+char g_DirSep = '\\';
+#else
+char g_DirSep = '/';
+#endif
 
 WORD  g_ShutdownPending = 0;
 LONG  g_LogLevel        = 1;
 DWORD g_dwInterval      = DOMPROM_DEFAULT_INTERVAL;
 
-void TrimAtFirstBlank (char *pszBuffer)
+void TruncateAtFirstBlank (char *pszBuffer)
 {
     char *p = pszBuffer;
 
@@ -130,6 +142,91 @@ void ReplaceChars (char *pszBuffer)
 
         p++;
     } /* while */
+}
+
+
+bool IsNullStr (const char *pszStr)
+{
+    if (NULL == pszStr)
+        return true;
+
+    if ('\0' == *pszStr)
+        return true;
+
+    return false;
+}
+
+int FileExists (const char *pszFilename)
+{
+    int ret = 0;
+
+#ifdef _WIN32
+    struct _stat Filestat = {0};
+#else
+    struct stat Filestat = {0};
+#endif
+
+    if (IsNullStr (pszFilename))
+        return 0;
+
+#ifdef _WIN32
+        ret = _stat (pszFilename, &Filestat);
+#else
+        ret = stat (pszFilename, &Filestat);
+
+#endif
+
+    if (ret)
+        return 0;
+
+    if (S_IFDIR & Filestat.st_mode)
+        return 2;
+    else
+        return 1;
+}
+
+
+bool CreateDirIfNotExists (const char *pszFilename)
+{
+    int  ret = 0;
+    bool bCreated = false;
+
+    if (IsNullStr (pszFilename))
+        return false;
+
+    ret = FileExists (pszFilename);
+
+    /* Directory already exists */
+    if (2 == ret)
+        return true;
+
+    /* A file with the same name already exists */
+    if (1 == ret)
+    {
+        AddInLogMessageText ("%s: Cannot create directory because a file with the same name exists: %s", 0, g_szTask, pszFilename);
+        return false;
+    }
+
+#ifdef _WIN32
+        if (TRUE == CreateDirectory (pszFilename, NULL))
+        {
+            bCreated = true;
+            perror ("Cannot create directory");
+        }
+#else
+        if (0 == mkdir (pszFilename, 0770))
+        {
+            bCreated = true;
+            perror ("Cannot create directory");
+        }
+#endif
+
+    if (bCreated)
+        AddInLogMessageText ("%s: Directory created: %s", 0, g_szTask, pszFilename);
+    else
+        AddInLogMessageText ("%s: Cannot create directory: %s", 0, g_szTask, pszFilename);
+
+    return bCreated;
 }
 
 
@@ -220,7 +317,7 @@ STATUS LNCALLBACK DomExportTraverse (void *pContext, char *pszFacility, char *ps
             if (pStats->bExportText)
             {
                 snprintf (szValue, sizeof (szValue), "%s", (char *)pValue);
-                TrimAtFirstBlank (szValue);
+                TruncateAtFirstBlank (szValue);
 
                 fprintf (pStats->fp, "%s%c%s\n", szMetric, DelimChar, szValue);
             }
@@ -284,7 +381,7 @@ STATUS LNCALLBACK DomExportTraverse (void *pContext, char *pszFacility, char *ps
 }
 
 
-STATUS LNPUBLIC GetDominoStatsTraverse (const char  *pszFilename)
+STATUS LNPUBLIC GetDominoStatsTraverse (const char *pszFilename)
 {
     STATUS error = NOERROR;
     char   szTempFilename[MAXPATH+1] = {0};
@@ -308,7 +405,7 @@ STATUS LNPUBLIC GetDominoStatsTraverse (const char  *pszFilename)
         goto Done;
     }
 
-    OSGetIntlSettings(&(Stats.Intl), sizeof (Stats.Intl));
+    OSGetIntlSettings (&(Stats.Intl), sizeof (Stats.Intl));
     snprintf (Stats.Intl.DecimalString,  sizeof (Stats.Intl.DecimalString), ".");
     snprintf (Stats.Intl.ThousandString, sizeof (Stats.Intl.ThousandString), ",");
 
@@ -389,9 +486,10 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
     DHANDLE hStatusLineDesc = NULLHANDLE;
     HMODULE hMod            = NULLHANDLE;
 
-    char    szStatsFilename[MAXPATH+100] = {0};
-    char    szStatus [MAXSPRINTF+1]      = {0};
-    char    *pszStatsFilename = szStatsFilename;
+    char    szStatsFilename[2*MAXPATH+200] = {0};
+    char    szStatsDirName[MAXPATH+100]    = {0};
+    char    szStatus [MAXSPRINTF+1]        = {0};
+    char    *pEnv = NULL;
 
     DWORD   dwSeconds  = 0;
 
@@ -403,19 +501,37 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
 
     OSGetDataDirectory (g_szDataDir);
 
+    /* First check if an outfile is defined */
     if (FALSE == OSGetEnvironmentString (ENV_DOMPROM_OUTFILE, szStatsFilename, sizeof (szStatsFilename)-1))
     {
         *szStatsFilename = '\0';
     }
 
-    if ('\0' == *szStatsFilename)
+    /* Else check for Domino defined stats directory */
+    if (FALSE == OSGetEnvironmentString (ENV_DOMPROM_STATS_DIR, szStatsDirName, sizeof (szStatsDirName)-1))
     {
-#ifdef _WIN32
-        snprintf (szStatsFilename, sizeof (szStatsFilename), "%s\\domino\\domino.prom", g_szDataDir);
-#else
-        snprintf (szStatsFilename, sizeof (szStatsFilename), "%s/domino/domino.prom", g_szDataDir);
-#endif
+        *szStatsDirName = '\0';
     }
+
+    /* Else check for OS level defined stats directory */
+    if ('\0' == *szStatsDirName)
+    {
+        pEnv = getenv (ENV_OS_DOMPROM_STATS_DIR);
+
+        if (pEnv)
+        {
+            snprintf (szStatsDirName, sizeof (szStatsDirName), "%s", pEnv);
+        }
+    }
+
+    /* If no stats dir set the default is notesdata/domino/stats */
+    if ('\0' == *szStatsDirName)
+    {
+        snprintf (szStatsDirName, sizeof (szStatsDirName), "%s%c%s%c%s", g_szDataDir, g_DirSep, "domino", g_DirSep, "stats");
+    }
+
+    CreateDirIfNotExists (szStatsDirName);
+    snprintf (szStatsFilename, sizeof (szStatsFilename), "%s%c%s", szStatsDirName, g_DirSep, g_szDominoProm);
 
     GetEnvironmentVars (TRUE);
 
@@ -427,7 +543,7 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
     while (0 == g_ShutdownPending)
     {
         AddInSetStatusText ("Running");
-        error = GetDominoStatsTraverse (pszStatsFilename);
+        error = GetDominoStatsTraverse (szStatsFilename);
 
         snprintf (szStatus, sizeof (szStatus), "Idle (Interval: %u)", g_dwInterval);
         AddInSetStatusText (szStatus);
