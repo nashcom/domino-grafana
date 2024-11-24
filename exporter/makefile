@@ -18,14 +18,19 @@ $(TARGET): $(OBJECT)
 $(OBJECT): $(SOURCE)
 	$(CC) $(CCOPTS) $(DEFINES) -I$(INCDIR) $(SOURCE) -o $(OBJECT)
 
-install:
+install: $(TARGET) 
 	cp -f $(TARGET) /opt/hcl/domino/notes/latest/linux/$(PROGRAM)
 	chmod 755  /opt/hcl/domino/notes/latest/linux/$(PROGRAM)
+
 clean:
 	rm -f *.o
 	rm -f ./$(TARGET)
 
-publish: all
+publish: $(TARGET) 
 	mkdir -p /local/software/nashcom.de/domino-bin
 	cp -f ./$(TARGET) /local/software/nashcom.de/domino-bin
 
+tar:    $(TARGET) 
+	tar -czf bin/linux64/domprom-$(shell grep "#define DOMPROM_VERSION" domprom.cpp | cut -f2 -d'"')-linux-amd64.taz domprom
+
+all:    $(TARGET)

@@ -1,3 +1,6 @@
 exporter/bin/w64/ndomprom.exe
 exporter/bin/w64/ndomprom.pdb
 exporter/bin/linux64/domprom
+*.o
+*.obj
+domprom
