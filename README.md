@@ -76,6 +76,18 @@ By default the following directories are used for native volumes
 - /local/loki-data
 - /local/prometheus-data
 
+## Special notes for SELinux
+
+When copying files the files might have the wrong security context even located in the right directory.
+Relabeling the binary should help:
+
+Example:
+
+```
+/usr/sbin/restorecon -v /usr/local/bin/node_exporter
+```
+
+The install script runs the relabeling if **restorecon** is installed.
 
 
 ## Setup log collection with Promtail for Loki

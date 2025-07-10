@@ -80,6 +80,11 @@ rm promtail.zip
 mv -f $DOWNLOAD_BINARY "$PROMTAIL_BIN"
 chmod 755 "$PROMTAIL_BIN"
 
+# Relable binary for SELinux if tool is availabe
+if [ -e /usr/sbin/restorecon ]; then
+  /usr/sbin/restorecon -v "$PROMTAIL_BIN"
+fi
+
 if [ ! -e /etc/sysconfig/promtail-config.yml ]; then
   cp promtail-config.yml /etc/sysconfig/promtail-config.yml
   vi /etc/sysconfig/promtail-config.yml

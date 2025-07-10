@@ -104,6 +104,12 @@ fi
 mv -f node_exporter "$NODE_EXPORTER_BIN"
 chmod 755 "$NODE_EXPORTER_BIN"
 
+# Relable binary for SELinux if tool is availabe
+if [ -e /usr/sbin/restorecon ]; then
+  /usr/sbin/restorecon -v "$NODE_EXPORTER_BIN"
+fi
+
+
 cp $SYSTEMD_FILE $SYSTEMD_FILEPATH
 chown root:root $SYSTEMD_FILEPATH
 chmod 644 $SYSTEMD_FILEPATH
