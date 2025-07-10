@@ -1,7 +1,7 @@
 /*
 ###########################################################################
 # Domino Prometheus Exporter                                              #
-# Version 0.9.1 16.11.2024                                                #
+# Version 0.9.2 24.11.2024                                                #
 # (C) Copyright Daniel Nashed/Nash!Com 2024                               #
 #                                                                         #
 # Licensed under the Apache License, Version 2.0 (the "License");         #
@@ -20,7 +20,7 @@
 ###########################################################################
 */
 
-#define DOMPROM_VERSION    "0.9.1"
+#define DOMPROM_VERSION    "0.9.2"
 #define DOMPROM_COPYRIGHT  "Copyright Daniel Nashed/Nash!Com 2024"
 #define DOMPROM_GITHUB_URL "https://github.com/nashcom/domino-grafana"
 
