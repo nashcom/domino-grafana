@@ -55,11 +55,27 @@ See the setup and systemd scripts in [/exporter](/exporter/README.md) for detail
 
 ## Setup metrics collection on Windows with node_exporter
 
-
 [Windows Exporter](https://github.com/prometheus-community/windows_exporter) is a native for Linux OS level metrics.
 It is a single binary available on [GitHub](https://github.com/prometheus-community/windows_exporter/releases), which should run on the host level to collect all relevant Windows statistics.
 
 The **Windows Exporter** can be configured to send additional log files, which is the best choice for Domino metrics collection on Windows to ensure metrics are in-line between the OS and Domino.
+
+## TLS Setup
+
+NGINX is expecting the certificate and key in
+
+- **/local/certs/cert.pem** certficate chain including root
+- **/local/certs/key.pem** private key
+
+
+## Location of data
+
+By default the following directories are used for native volumes
+
+- /local/grafana-data
+- /local/loki-data
+- /local/prometheus-data
+
 
 
 ## Setup log collection with Promtail for Loki
@@ -81,5 +97,13 @@ A good way is to copied the dashboard and added Domino statistics to it from the
 
 The dashboard is also an excellent example to learn building dashboards.
 
+To get the dashboard installed, enter the dashboard URL or the number of the dashboard which is **1860**
+
 There is also a [Windows Node Exporter Dashboard](https://grafana.com/grafana/dashboards/14499-windows-node/) which is using the Windows Exporter in a similar way.
+
+## First Login to Grafana
+
+The default user and password is **admin/admin** and should be changed immediately.
+Once the server is started, log into the portal. The GUI prompts to change the password.
+
 

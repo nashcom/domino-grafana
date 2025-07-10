@@ -1,8 +1,9 @@
 #!/bin/bash
 
-DOWNLOAD_URL=https://github.com/grafana/loki/releases/download/v2.9.6/promtail-linux-amd64.zip
-DOWNLOAD_HASH=04db05ba4caf098cbfd3f49b2f0ee7b2e94073fd7822ee775cc904c6569b5075
+DOWNLOAD_URL=https://github.com/grafana/loki/releases/download/v3.4.4/promtail-linux-amd64.zip
+DOWNLOAD_HASH=8bfd06f21609d2f38c8bfc1731a1696ed9ffdbbfbfcd2c8075b1fb3b7f5e934b
 DOWNLOAD_BINARY=promtail-linux-amd64
+PROMTAIL_BIN=/usr/local/bin/promtail
 
 SYSTEMD_NAME=promtail
 SYSTEMD_FILE=$SYSTEMD_NAME.service
@@ -36,13 +37,18 @@ header()
 }
 
 
-if [ -e /usr/bin/promtail ]; then
+if [ -e "$PROMTAIL_BIN" ]; then
 
-  VERSION=$(/usr/bin/promtail --version | grep "promtail, version"| awk -F 'version ' '{print $2}' | cut -f1 -d' ')
+  VERSION=$("$PROMTAIL_BIN" --version | grep "promtail, version"| awk -F 'version ' '{print $2}' | cut -f1 -d' ')
 
-   log "Promtail version $VERSION already installed"
+  log "Promtail version $VERSION already installed"
 
-  exit 0
+  if [ "$1" = "-force" ]; then
+    echo "Overwriting promtail.."
+  else
+    echo "run $0 -force  to overwrite"
+    exit 0
+  fi
 fi
 
 
@@ -71,8 +77,8 @@ header "Extracting and installing binary"
 unzip promtail.zip
 rm promtail.zip
 
-mv -f $DOWNLOAD_BINARY /usr/bin/promtail
-chmod 755 /usr/bin/promtail
+mv -f $DOWNLOAD_BINARY "$PROMTAIL_BIN"
+chmod 755 "$PROMTAIL_BIN"
 
 if [ ! -e /etc/sysconfig/promtail-config.yml ]; then
   cp promtail-config.yml /etc/sysconfig/promtail-config.yml

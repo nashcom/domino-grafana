@@ -26,7 +26,7 @@ After=syslog.target network.target
 [Service]
 Type=exec
 User=notes
-ExecStart=/usr/bin/promtail -config.file=/etc/sysconfig/promtail-config.yml
+ExecStart=/usr/local/bin/promtail -config.file=/etc/sysconfig/promtail-config.yml
 StandardOutput=file:/tmp/promtail.log
 StandardError=file:/tmp/promtail.log
 

@@ -1,13 +1,12 @@
 #!/bin/bash
 
-
-DOWNLOAD_URL=https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-amd64.tar.gz
-DOWNLOAD_HASH=6809dd0b3ec45fd6e992c19071d6b5253aed3ead7bf0686885a51d85c6643c66
-
+DOWNLOAD_URL=https://github.com/prometheus/node_exporter/releases/download/v1.9.1/node_exporter-1.9.1.linux-amd64.tar.gz
+DOWNLOAD_HASH=becb950ee80daa8ae7331d77966d94a611af79ad0d3307380907e0ec08f5b4e8
 
 SYSTEMD_NAME=node_exporter
 SYSTEMD_FILE=$SYSTEMD_NAME.service
 SYSTEMD_FILEPATH=/etc/systemd/system/$SYSTEMD_FILE
+NODE_EXPORTER_BIN=/usr/local/bin/node_exporter
 
 
 log()
@@ -101,9 +100,9 @@ if [ ! -e node_exporter ]; then
   exit 1
 fi
 
-# Binary needs to be located in /usr/sbin because of SELinux permissions
-mv -f node_exporter /usr/sbin/node_exporter
-chmod 755 /usr/sbin/node_exporter
+# Binary needs to be located in /usr/local/bin because of SELinux permissions
+mv -f node_exporter "$NODE_EXPORTER_BIN"
+chmod 755 "$NODE_EXPORTER_BIN"
 
 cp $SYSTEMD_FILE $SYSTEMD_FILEPATH
 chown root:root $SYSTEMD_FILEPATH
