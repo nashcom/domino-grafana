@@ -67,14 +67,32 @@ NGINX is expecting the certificate and key in
 - **/local/certs/cert.pem** certficate chain including root
 - **/local/certs/key.pem** private key
 
+Note: CertMgr can create exportable MicroCA certificates. It can be decrypted using an OpenSSL command line. It prompts for the password and stores it unencrypted.
+
+```
+openssl pkey -in encrypted_key -out key.pem
+```
+
 
 ## Location of data
 
-By default the following directories are used for native volumes
+Data is stored in the following volumes.
+In contrast all configuration are stored in native volumes.
 
-- /local/grafana-data
-- /local/loki-data
-- /local/prometheus-data
+- grafana-data
+- loki-data
+- prometheus-data
+
+
+In earlier versions the data was located in native volumes, which was more complicated to setup.
+When you migrate from an earlier version you have to move the data.
+
+
+## Configure data sources
+
+Data sources can be pre-configured using a `prometheus.yml` file.
+Copy the `prometheus.yml.example` into a `prometheus.yml` and adopt it to your configuration.
+
 
 ## Special notes for SELinux
 

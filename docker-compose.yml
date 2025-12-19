@@ -9,7 +9,7 @@ services:
     stop_grace_period: 15s
 
     volumes:
-      - /local/grafana-data:/var/lib/grafana:z
+      - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:z
 
     networks:
@@ -25,7 +25,7 @@ services:
 
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:z
-      - /local/prometheus-data:/prometheus:z
+      - prometheus-data:/prometheus
 
     networks:
       grafana_net:
@@ -36,7 +36,7 @@ services:
 
     volumes:
       - ./loki-config.yml:/loki-config.yml:z
-      - /local/loki-data:/tmp/loki:z
+      - loki-data:/tmp/loki
 
     ports:
       - "3100:3100"
@@ -51,14 +51,18 @@ services:
     image: nginx
     container_name: grafana-nginx
     hostname: grafana-nginx
+    restart: always
     stop_grace_period: 15s
+    depends_on:
+      - grafana
+      - prometheus
 
     ports:
       - 3000:443
 
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:z
-      - /local/certs:/certs:z
+      - ./certs:/certs:z
 
     networks:
       grafana_net:
@@ -77,4 +81,6 @@ volumes:
 networks:
 
   grafana_net:
+    name: grafana_net
     driver: bridge
+

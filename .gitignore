@@ -1,6 +1,9 @@
 exporter/bin/w64/ndomprom.exe
 exporter/bin/w64/ndomprom.pdb
 exporter/bin/linux64/domprom
+prometheus.yml
+certs/*.pem
+certs/*.txt
 *.o
 *.obj
 domprom
