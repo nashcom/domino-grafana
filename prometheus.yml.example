@@ -2,9 +2,14 @@ global:
   scrape_interval: 60s
 
 scrape_configs:
+  - job_name: domino
+    static_configs:
+      - targets:
+          - notes.example.com:9100
+        labels:
+          DominoServer: notes.example.com
 
-- job_name: notes_nashcom_de
-  static_configs:
-  - targets: ['notes.nashcom.de:9100']
-    labels:
-      DominoServer: 'notes_nashcom_de'
+      - targets:
+          - domino.example.com:9100
+        labels:
+          DominoServer: domino.example.com
