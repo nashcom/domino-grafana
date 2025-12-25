@@ -1,5 +1,6 @@
 #!/bin/bash
 
+DOWNLOAD_VERSION=1.10.2
 DOWNLOAD_URL=https://github.com/prometheus/node_exporter/releases/download/v1.10.2/node_exporter-1.10.2.linux-amd64.tar.gz
 DOWNLOAD_HASH=c46e5b6f53948477ff3a19d97c58307394a29fe64a01905646f026ddc32cb65b
 
@@ -45,7 +46,7 @@ config_firewall()
   firewall-cmd --zone=public --permanent --add-port=9100/tcp
   firewall-cmd --reload
 
-  log "Info: Firewall services enabled - TCP/Inbound: Prometeus Node Exporter port 9100"
+  log "Info: Firewall services enabled - TCP/Inbound: Prometheus Node Exporter port 9100"
 }
 
 
@@ -91,6 +92,22 @@ download()
   exit 1
 }
 
+
+header "Prometheus Node Exporter $DOWNLOAD_VERSION Installer"
+
+# Check if requested version is already installed
+if [ -e "$NODE_EXPORTER_BIN" ]; then
+
+  INSTALL_MODE=update
+  NODE_EXPORTER_VERSION=$("$NODE_EXPORTER_BIN" --version 2>&1 | sed -n 's/.*version \([^ ]*\).*/\1/p;q')
+
+  if [ "$DOWNLOAD_VERSION" = "$NODE_EXPORTER_VERSION" ]; then
+    log "Node exporter $NODE_EXPORTER_VERSION already installed"
+    exit 0
+  fi
+
+fi
+
 header "Downloading binary from GitHub"
 
 download "$DOWNLOAD_URL" "node_exporter" "$DOWNLOAD_HASH"
@@ -100,26 +117,39 @@ if [ ! -e node_exporter ]; then
   exit 1
 fi
 
+if [ -e "$NODE_EXPORTER_BIN" ]; then
+
+  if [ "$(sha256sum -b "$NODE_EXPORTER_BIN" | cut -d' ' -f1)" = "$(sha256sum node_exporter -b | cut -d' ' -f1)" ]; then
+    log "Node exporter $NODE_EXPORTER_VERSION already installed"
+    exit 0
+  fi
+
+fi
+
 # Binary needs to be located in /usr/local/bin because of SELinux permissions
 mv -f node_exporter "$NODE_EXPORTER_BIN"
 chmod 755 "$NODE_EXPORTER_BIN"
 
-# Relable binary for SELinux if tool is availabe
+# Relabel binary for SELinux if tool is available
 if [ -e /usr/sbin/restorecon ]; then
   /usr/sbin/restorecon -v "$NODE_EXPORTER_BIN"
 fi
 
+if [ "$INSTALL_MODE" = "update" ]; then
+  log "Restarting Node Exporter service ..."
+  systemctl restart "$SYSTEMD_NAME"
+  exit 0
+fi
 
 cp $SYSTEMD_FILE $SYSTEMD_FILEPATH
 chown root:root $SYSTEMD_FILEPATH
 chmod 644 $SYSTEMD_FILEPATH
 
 systemctl daemon-reload
-echo
-echo "Starting Node Exporter service ..."
-echo
-systemctl enable --now $SYSTEMD_NAME
+log "Starting Node Exporter service ..."
+systemctl enable --now "$SYSTEMD_NAME"
 echo
 
 config_firewall
 
+log "Done"
