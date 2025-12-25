@@ -1,8 +1,8 @@
 ###########################################################################
 # systemd Service - Prometheus Node Exporter                              #
-# Version 1.0.1 22.06.2024                                                #
+# Version 1.0.2 24.12.2025                                                #
 #                                                                         #
-# (C) Copyright Daniel Nashed/NashCom 2024                                #
+# (C) Copyright Daniel Nashed/NashCom 2024-2025                           #
 # Feedback domino_unix@nashcom.de                                         #
 #                                                                         #
 # Licensed under the Apache License, Version 2.0 (the "License");         #
@@ -26,7 +26,9 @@ After=syslog.target network.target
 [Service]
 Type=exec
 User=notes
-ExecStart=/usr/local/bin/node_exporter --collector.textfile.directory=/local/notesdata/domino
+
+# Make sure this directory matches your configuration. The default directory for .prom files to collect is /local/notesdata/domino/stats
+ExecStart=/usr/local/bin/node_exporter --collector.textfile.directory=/local/notesdata/domino/stats
 StandardOutput=file:/tmp/node_exporter.log
 StandardError=file:/tmp/node_exporter_error.log
 

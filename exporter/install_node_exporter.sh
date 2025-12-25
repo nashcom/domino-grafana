@@ -36,20 +36,6 @@ header()
   echo
 }
 
-config_firewall()
-{
-  if [ ! -e /usr/sbin/firewalld ]; then
-    log "Firewalld not installed"
-    return 0
-  fi
-
-  firewall-cmd --zone=public --permanent --add-port=9100/tcp
-  firewall-cmd --reload
-
-  log "Info: Firewall services enabled - TCP/Inbound: Prometheus Node Exporter port 9100"
-}
-
-
 download()
 {
   DOWNLOAD_FILE=$1
@@ -150,6 +136,4 @@ log "Starting Node Exporter service ..."
 systemctl enable --now "$SYSTEMD_NAME"
 echo
 
-config_firewall
-
-log "Done"
+log "Completed"
