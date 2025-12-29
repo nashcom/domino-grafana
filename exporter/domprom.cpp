@@ -65,15 +65,16 @@
   #include <limits.h>
 #endif
 
+#include <ctype.h>
 #include <inttypes.h>
-#include <stdio.h>
-#include <string.h>
+#include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
-#include <ctype.h>
+#include <string.h>
 #include <sys/stat.h>
-#include <math.h>
+#include <time.h>
+
 
 #include <global.h>
 #include <addin.h>
@@ -89,6 +90,10 @@
 #include <oserr.h>
 #include <ostime.h>
 
+#include <cstdio>
+#include <string>
+#include <vector>
+#include <algorithm>
 
 /* Types */
 
@@ -163,6 +168,79 @@ LONG  g_LogLevel            = 1;
 DWORD g_dwIntervalSec       = DOMPROM_DEFAULT_INTERVAL_SEC;
 DWORD g_dwTransIntervalSec  = DOMPROM_DEFAULT_TRANS_INTERVAL_SEC;
 DWORD g_dwIOStatIntervalSec = DOMPROM_DEFAULT_IOSTAT_INTERVAL_SEC;
+
+
+class PrefixFilter
+{
+
+public:
+
+    void AddInclude (const std::string& p)
+    {
+        m_include.push_back(p);
+    }
+
+    void AddExclude (const std::string& p)
+    {
+        m_exclude.push_back(p);
+    }
+
+    // Sort include/exclude by len for faster matching and simple logic. the longest match wins
+    void Finalize ()
+    {
+        auto byLengthDesc = [] (const std::string& a, const std::string& b)
+        {
+            return a.size() > b.size();
+        };
+
+        std::sort (m_include.begin(), m_include.end(), byLengthDesc);
+        std::sort (m_exclude.begin(), m_exclude.end(), byLengthDesc);
+    }
+
+    // default include if not found
+
+    bool ShouldInclude (const std::string& name) const
+    {
+        if (Matches(m_include, name))
+            return true;
+
+        if (Matches(m_exclude, name))
+            return false;
+
+        return true;
+    }
+
+    bool ShouldExclude (const std::string& name) const
+    {
+        if (Matches (m_include, name))
+            return false;
+
+        if (Matches (m_exclude, name))
+            return true;
+
+        return false;
+    }
+
+
+private:
+
+    static bool Matches (const std::vector<std::string>& prefixes,
+                         const std::string& value)
+    {
+        for (const auto& p : prefixes)
+        {
+            if (value.compare(0, p.size(), p) == 0)
+                return true;
+        }
+        return false;
+    }
+
+    std::vector<std::string> m_include;
+    std::vector<std::string> m_exclude;
+};
+
+
+PrefixFilter g_StatsFilter;
 
 
 void TruncateAtFirstBlank (char *pszBuffer)
@@ -606,9 +684,11 @@ STATUS LNCALLBACK DomExportTraverse (void *pContext, char *pszFacility, char *ps
     LONG   NotesLong      = 0;
     WORD   wLen           = 0;
     NFMT   NumberFormat   = {0};
-    char   szMetric[1024] = {0};
-    char   szValue[1024]  = {0};
-    char   DelimChar      = ' ';
+
+    char   szMetric[1024]      = {0};
+    char   szMetricLower[1024] = {0};
+    char   szValue[1024]       = {0};
+    char   DelimChar           = ' ';
 
     CONTEXT_STRUCT_TYPE *pStats = (CONTEXT_STRUCT_TYPE*)pContext;
 
@@ -633,6 +713,13 @@ STATUS LNCALLBACK DomExportTraverse (void *pContext, char *pszFacility, char *ps
     NumberFormat.Format = NFMT_GENERAL;
 
     snprintf (szMetric, sizeof (szMetric), "%s.%s", pszFacility, pszStatName);
+    OSTranslate32 (OS_TRANSLATE_UPPER_TO_LOWER, szMetric, MAXDWORD, szMetricLower, sizeof (szMetricLower));
+
+    if (g_StatsFilter.ShouldExclude (szMetricLower))
+    {
+        return NOERROR;
+    }
+
     ReplaceChars (szMetric);
 
     if (NULL == pszFacility)
@@ -647,9 +734,10 @@ STATUS LNCALLBACK DomExportTraverse (void *pContext, char *pszFacility, char *ps
         return ERR_MISC_INVALID_ARGS;
     }
 
+    /* Exclude Domino Health stats because they are maintained in this application */
     if (g_wWriteDominoHealthStats)
     {
-        if (0 == strcmp (pszFacility, g_szDominoHealth))
+        if (0 == CompareCaseInsensitive (pszFacility, g_szDominoHealth))
         {
             return NOERROR;
         }
@@ -1356,8 +1444,9 @@ Done:
 
 STATUS LNPUBLIC GetDominoStatsTraverse (const char *pszFilename)
 {
-    STATUS error = NOERROR;
-    char   szTempFilename[MAXPATH+1] = {0};
+    STATUS   error = NOERROR;
+    char     szTempFilename[MAXPATH+1] = {0};
+    uint64_t EpochSec = (uint64_t) time (NULL);
 
     CONTEXT_STRUCT_TYPE Stats = {0};
 
@@ -1424,6 +1513,8 @@ STATUS LNPUBLIC GetDominoStatsTraverse (const char *pszFilename)
     ProcessDiskStats     (Stats.fp);
     ProcessDaosStats     (Stats.fp);
     ProcessTranslogStats (Stats.fp);
+
+    fprintf (Stats.fp, "%s_StatUpdateEpochTime %lu\n", g_szDominoHealth, EpochSec);
 
 Done:
 
@@ -1661,6 +1752,35 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
 
     } /* for */
 
+    // Add Include/Exclude rules - Names must be specified all LOWERCASE!
+
+    // Exclude platform stats in general and just include relevant stats to not pollute stats
+    g_StatsFilter.AddExclude ("platform.");
+    g_StatsFilter.AddInclude ("platform.network.total.");
+
+    g_StatsFilter.AddExclude ("disk.");
+
+    // Exclude sensitive stats containing names
+    g_StatsFilter.AddExclude ("replica.cluster.currency.");
+    g_StatsFilter.AddExclude ("server.cluster.member.");
+    g_StatsFilter.AddExclude ("net.log.");
+
+    // Exclude statistics which contain PIDs which change too often and don't fit for monitoring
+    g_StatsFilter.AddExclude ("mem.pid.");
+    g_StatsFilter.AddExclude ("mem.local.max.used.");
+
+    // Exclude Traveler stats in general and just include relevant stats to not pollute stats
+    g_StatsFilter.AddExclude ("traveler.");
+
+    g_StatsFilter.AddInclude ("traveler.memory.");
+    g_StatsFilter.AddInclude ("traveler.status.state.severity");
+    g_StatsFilter.AddInclude ("traveler.push.");
+    g_StatsFilter.AddInclude ("traveler.primesync.count");
+    g_StatsFilter.AddInclude ("traveler.constrained.");
+    g_StatsFilter.AddInclude ("traveler.http.status.");
+    g_StatsFilter.AddInclude ("traveler.monitor.users");
+
+    g_StatsFilter.Finalize();
 
     error = NSFGetTransLogStyle (&g_wTranslogLogType);
 

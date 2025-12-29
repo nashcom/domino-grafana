@@ -24,7 +24,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "edhq948fbuosgc"
+        "uid": "DS_PROMETHEUS"
       },
       "description": "Domino Server Expansion Factor",
       "fieldConfig": {
@@ -124,7 +124,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "edhq948fbuosgc"
+        "uid": "DS_PROMETHEUS"
       },
       "description": "Transactions per Minute",
       "fieldConfig": {
@@ -228,7 +228,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "DS_PROMETHEUS"
       },
       "description": "Running Average Time",
       "fieldConfig": {
@@ -365,7 +365,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "DS_PROMETHEUS"
       },
       "description": "Running Average Time",
       "fieldConfig": {
@@ -484,8 +484,8 @@
     "list": [
       {
         "current": {
-          "text": "prometheus",
-          "value": "edhq948fbuosgc"
+          "text": "Prometheus",
+          "value": "DS_PROMETHEUS"
         },
         "includeAll": false,
         "label": "Datasource",
@@ -565,12 +565,12 @@
     ]
   },
   "time": {
-    "from": "now-12h",
+    "from": "now-5m",
     "to": "now"
   },
   "timepicker": {},
   "timezone": "browser",
   "title": "Domino SAI & Transactions",
   "uid": "bdi02f9p93vnkd",
-  "version": 20
+  "version": 5
 }
