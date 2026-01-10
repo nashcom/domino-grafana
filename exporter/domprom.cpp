@@ -1,8 +1,8 @@
-/*
+#/*
 ###########################################################################
 # Domino Prometheus Exporter                                              #
-# Version 0.9.3 24.12.2025                                                #
-# (C) Copyright Daniel Nashed/Nash!Com 2024-2025                          #
+# Version 1.0.1 10.01.2026                                                #
+# (C) Copyright Daniel Nashed/Nash!Com 2024-2026                          #
 #                                                                         #
 # Licensed under the Apache License, Version 2.0 (the "License");         #
 # you may not use this file except in compliance with the License.        #
@@ -20,8 +20,19 @@
 ###########################################################################
 */
 
-#define DOMPROM_VERSION    "0.9.3"
-#define DOMPROM_COPYRIGHT  "Copyright Daniel Nashed/Nash!Com 2024-2025"
+
+#define TASKNAME "DOMPROM"
+#define MsgQueueName TASK_QUEUE_PREFIX TASKNAME
+
+#define DOMPROM_VERSION    "1.0.0"
+
+#define DOMPROM_VERSION_MAJOR 1
+#define DOMPROM_VERSION_MINOR 0
+#define DOMPROM_VERSION_PATCH 0
+
+#define DOMPROM_VERSION_BUILD (DOMPROM_VERSION_MAJOR * 10000 +  DOMPROM_VERSION_MINOR * 100 + DOMPROM_VERSION_PATCH)
+
+#define DOMPROM_COPYRIGHT  "Copyright Daniel Nashed/Nash!Com 2024-2026"
 #define DOMPROM_GITHUB_URL "https://github.com/nashcom/domino-grafana"
 
 #define ENV_DOMPROM_LOGLEVEL        "domprom_loglevel"
@@ -30,9 +41,10 @@
 #define ENV_DOMPROM_TRANS_OUTFILE   "domprom_trans_outfile"
 #define ENV_DOMPROM_INTERVAL        "domprom_interval"
 #define ENV_DOMPROM_NO_PREFIX       "domprom_no_domino_prefix"
-#define ENV_OS_DOMPROM_STATS_DIR    "DOMINO_PROM_STATS_DIR"
 #define ENV_DOMPROM_COLLECT_TRANS   "domprom_collect_trans"
 #define ENV_DOMPROM_COLLECT_IOSTAT  "domprom_collect_iostat"
+#define ENV_DOMPROM_INTERVAL_TRANS  "domprom_interval_trans"
+#define ENV_DOMPROM_INTERVAL_IOSTAT "domprom_interval_iostat"
 
 #define DOMPROM_DEFAULT_INTERVAL_SEC 60
 #define DOMPROM_MINIMUM_INTERVAL_SEC 10
@@ -78,6 +90,7 @@
 
 #include <global.h>
 #include <addin.h>
+#include <stdnames.h>
 #include <intl.h>
 #include <miscerr.h>
 #include <nsfdb.h>
@@ -89,11 +102,18 @@
 #include <kfm.h>
 #include <oserr.h>
 #include <ostime.h>
+#include <misc.h>
+#include <mq.h>
 
 #include <cstdio>
 #include <string>
 #include <vector>
+#include <list>
+#include <cstdio>
+#include <cinttypes>
 #include <algorithm>
+#include <ctime>
+#include <cstdint>
 
 /* Types */
 
@@ -122,7 +142,7 @@ struct CONTEXT_STRUCT_TYPE
 
 /* Globals */
 
-char  g_szVersion[]        = DOMPROM_VERSION;
+char  g_szVersion[40]       = {0};
 char  g_szCopyright[]       = DOMPROM_COPYRIGHT;
 char  g_szGitHubURL[]       = DOMPROM_GITHUB_URL;
 char  g_szDominoHealth[]    = "DominoHealth";
@@ -140,6 +160,11 @@ char  g_szDirFT[MAXPATH+1]         = {0};
 char  g_szNotesTemp[MAXPATH+1]     = {0};
 char  g_szViewRebuild[MAXPATH+1]   = {0};
 char  g_szNotesLogDir[MAXPATH+1]   = {0};
+
+char  g_szPromTypeGauge[]     = "gauge";
+char  g_szPromTypeCounter[]   = "counter";
+char  g_szPromTypeUntyped[]   = "untyped";
+char  g_szEmpty[]             = "";
 
 WORD   g_wTranslogLogType     = 0;
 WORD   g_wLogLevel            = 0;
@@ -163,12 +188,22 @@ char g_DirSep = '\\';
 char g_DirSep = '/';
 #endif
 
+char  g_PromDelimChar       = ' ';
 WORD  g_ShutdownPending     = 0;
 LONG  g_LogLevel            = 1;
 DWORD g_dwIntervalSec       = DOMPROM_DEFAULT_INTERVAL_SEC;
 DWORD g_dwTransIntervalSec  = DOMPROM_DEFAULT_TRANS_INTERVAL_SEC;
 DWORD g_dwIOStatIntervalSec = DOMPROM_DEFAULT_IOSTAT_INTERVAL_SEC;
 
+/* Helper list to process disk stats and write them separately (Totals and Free) */
+
+std::list<std::string> g_ListDiskTotalStats;
+std::list<std::string> g_ListDiskFreeStats;
+
+/* Helper list to process transactions and write them separately (count and total) */
+
+std::list<std::string> g_ListTransCountStats;
+std::list<std::string> g_ListTransTotalMsStats;
 
 class PrefixFilter
 {
@@ -529,6 +564,48 @@ int CompareCaseInsensitive (const char *pszStr1, const char *pszStr2)
 }
 
 
+uint64_t EpochFromUtcTm (struct tm* pUtcTm)
+{
+#ifdef _WIN32
+    return static_cast<uint64_t>(_mkgmtime64(pUtcTm));
+#else
+    return static_cast<uint64_t>(timegm(pUtcTm));
+#endif
+}
+
+
+uint64_t TimeDateToEpoch (const TIMEDATE* pTimeDate)
+{
+    if (NULL == pTimeDate)
+        return 0;
+
+    TIME t = {};
+    struct tm utc_tm = {};
+
+    t.GM = *pTimeDate;
+
+    if (TimeGMToLocal (&t))
+    {
+        return 0;
+    }
+
+    if (t.year < 1900)
+    {
+        return 0;
+    }
+
+    utc_tm.tm_year  = t.year - 1900;
+    utc_tm.tm_mon   = t.month - 1;
+    utc_tm.tm_mday  = t.day;
+    utc_tm.tm_hour  = t.hour;
+    utc_tm.tm_min   = t.minute;
+    utc_tm.tm_sec   = t.second;
+    utc_tm.tm_isdst = 0;
+
+    return EpochFromUtcTm (&utc_tm);
+}
+
+
 STATUS StatUpdateText (const char *pszStatPkg, const char *pszName, const char *pszText)
 {
     if (IsNullStr (pszStatPkg) || IsNullStr (pszName))
@@ -678,250 +755,6 @@ STATUS UpdateCatalogDAOS (const char *pszValue)
 }
 
 
-STATUS LNCALLBACK DomExportTraverse (void *pContext, char *pszFacility, char *pszStatName, WORD wValueType, void *pValue)
-{
-    STATUS error          = NOERROR;
-    LONG   NotesLong      = 0;
-    WORD   wLen           = 0;
-    NFMT   NumberFormat   = {0};
-
-    char   szMetric[1024]      = {0};
-    char   szMetricLower[1024] = {0};
-    char   szValue[1024]       = {0};
-    char   DelimChar           = ' ';
-
-    CONTEXT_STRUCT_TYPE *pStats = (CONTEXT_STRUCT_TYPE*)pContext;
-
-    if (NULL == pszFacility)
-        return NOERROR;
-
-    if (NULL == pszStatName)
-        return NOERROR;
-
-    if (NULL == pValue)
-        return NOERROR;
-
-    if (NULL == pStats)
-        return ERR_MISC_INVALID_ARGS;
-
-    if (NULL == pStats->fp)
-        return ERR_MISC_INVALID_ARGS;
-
-    pStats->CountAll++;
-
-    NumberFormat.Digits = 2;
-    NumberFormat.Format = NFMT_GENERAL;
-
-    snprintf (szMetric, sizeof (szMetric), "%s.%s", pszFacility, pszStatName);
-    OSTranslate32 (OS_TRANSLATE_UPPER_TO_LOWER, szMetric, MAXDWORD, szMetricLower, sizeof (szMetricLower));
-
-    if (g_StatsFilter.ShouldExclude (szMetricLower))
-    {
-        return NOERROR;
-    }
-
-    ReplaceChars (szMetric);
-
-    if (NULL == pszFacility)
-    {
-        pStats->CountInvalid++;
-        return ERR_MISC_INVALID_ARGS;
-    }
-
-    if (NULL == pszStatName)
-    {
-        pStats->CountInvalid++;
-        return ERR_MISC_INVALID_ARGS;
-    }
-
-    /* Exclude Domino Health stats because they are maintained in this application */
-    if (g_wWriteDominoHealthStats)
-    {
-        if (0 == CompareCaseInsensitive (pszFacility, g_szDominoHealth))
-        {
-            return NOERROR;
-        }
-    }
-
-    switch (wValueType)
-    {
-        case VT_TEXT:
-
-            pStats->CountText++;
-
-            if (0 == CompareCaseInsensitive (szMetric, "DAOS_Engine_Status"))
-            {
-                UpdateStatusDAOS ((const char *)pValue);
-            }
-            else if (0 == CompareCaseInsensitive (szMetric, "DAOS_Engine_Catalog"))
-            {
-                UpdateCatalogDAOS ((const char *)pValue);
-            }
-
-            if (pStats->bExportText)
-            {
-                snprintf (szValue, sizeof (szValue), "%s", (char *)pValue);
-
-                TruncateAtFirstBlank (szValue);
-
-                fprintf (pStats->fp, "%s%s%c%s\n", pStats->szPrefix, szMetric, DelimChar, szValue);
-            }
-            break;
-
-        case VT_LONG:
-
-            pStats->CountLong++;
-
-            if (pStats->bExportLong)
-            {
-                NotesLong = *(LONG *) pValue;
-                fprintf (pStats->fp, "%s%s%c%d\n", pStats->szPrefix, szMetric, DelimChar, NotesLong);
-            }
-            break;
-
-        case VT_NUMBER:
-
-            pStats->CountNumber++;
-
-            if (pStats->bExportLong)
-            {
-                error = ConvertFLOATToText (&(pStats->Intl), &NumberFormat, (NUMBER *)pValue, szValue, sizeof (szValue)-1, &wLen);
-                if (error)
-                {
-                    pStats->CountInvalid++;
-                }
-                else
-                {
-                    szValue[wLen] = '\0';
-                    fprintf (pStats->fp, "%s%s%c%s\n", pStats->szPrefix, szMetric, DelimChar, szValue);
-                }
-            }
-            break;
-
-        case VT_TIMEDATE:
-
-            pStats->CountTime++;
-
-            if (pStats->bExportTime)
-            {
-                if (GetNotesTimeDateSting ((TIMEDATE *)pValue, sizeof (szValue), szValue))
-                {
-                    pStats->CountInvalid++;
-                }
-                else
-                {
-                    fprintf (pStats->fp, "%s%s%c%s\n", pStats->szPrefix, szMetric, DelimChar, szValue);
-                }
-            }
-            break;
-
-        default:
-
-            pStats->CountUnknown++;
-            break;
-
-    } /* switch */
-
-    return error;
-}
-
-STATUS ProcessSingleDiskStat (FILE *fp, const char *pszPathName, const char *pszComponent)
-{
-    bool     bFound     = false;
-    uint64_t TotalBytes = 0;
-    uint64_t FreeBytes  = 0;
-    char     szMetric[1024] = {0};
-
-    if (IsNullStr (pszPathName))
-        return ERR_MISC_INVALID_ARGS;
-
-    if (IsNullStr (pszComponent))
-        return ERR_MISC_INVALID_ARGS;
-
-    bFound = GetDiskUsageFrom (pszPathName, &TotalBytes, &FreeBytes);
-
-    if (g_wWriteDominoHealthStats)
-    {
-        snprintf (szMetric, sizeof (szMetric), "Disk.%s.Total_MB", pszComponent);
-        StatUpdateNumberBytesInMB (g_szDominoHealth, szMetric, TotalBytes);
-
-        snprintf (szMetric, sizeof (szMetric), "Disk.%s.Free_MB", pszComponent);
-        StatUpdateNumberBytesInMB (g_szDominoHealth, szMetric, FreeBytes);
-
-        snprintf (szMetric, sizeof (szMetric), "Disk.%s.Path", pszComponent);
-        StatUpdateText (g_szDominoHealth, szMetric, pszPathName);
-    }
-
-    if (false == bFound)
-    {
-        return NOERROR;
-    }
-
-    if (NULL == fp)
-        return ERR_MISC_INVALID_ARGS;
-
-    fprintf (fp, "%s_disk_total_bytes{component=\"%s\", path=\"%s\"} %" PRIu64 "\n", g_szDominoHealth, pszComponent, pszPathName, TotalBytes);
-    fprintf (fp, "%s_disk_free_bytes{component=\"%s\", path=\"%s\"} %" PRIu64 "\n", g_szDominoHealth, pszComponent, pszPathName, FreeBytes);
-
-    return NOERROR;
-}
-
-
-STATUS ProcessDiskStats (FILE *fp)
-{
-    if (NULL == fp)
-        return ERR_MISC_INVALID_ARGS;
-
-    ProcessSingleDiskStat (fp, g_szDataDir,     DOMPROM_DISK_COMPONENT_NOTESDATA);
-    ProcessSingleDiskStat (fp, g_szDirTranslog, DOMPROM_DISK_COMPONENT_TRANSLOG);
-    ProcessSingleDiskStat (fp, g_szDirDAOS,     DOMPROM_DISK_COMPONENT_DAOS);
-    ProcessSingleDiskStat (fp, g_szDirNIF,      DOMPROM_DISK_COMPONENT_NIF);
-    ProcessSingleDiskStat (fp, g_szDirFT,       DOMPROM_DISK_COMPONENT_FT);
-    ProcessSingleDiskStat (fp, g_szNotesTemp,   DOMPROM_DISK_COMPONENT_NOTES_TEMP);
-    ProcessSingleDiskStat (fp, g_szViewRebuild, DOMPROM_DISK_COMPONENT_VIEW_REBUILD);
-    ProcessSingleDiskStat (fp, g_szNotesLogDir, DOMPROM_DISK_COMPONENT_NOTES_LOG_DIR);
-
-    return NOERROR;
-}
-
-STATUS ProcessDaosStats (FILE *fp)
-{
-    int CatalogStatus = 1;
-
-    if (NULL == fp)
-        return ERR_MISC_INVALID_ARGS;
-
-    if (0 == g_StatusDAOS)
-        CatalogStatus = -1;
-    else if (g_CatalogInSyncDAOS)
-        CatalogStatus = 0;
-    else
-        CatalogStatus = 1;
-
-    if (g_wWriteDominoHealthStats)
-    {
-        StatUpdateNumber (g_szDominoHealth, "DAOS.Status", g_StatusDAOS);
-        StatUpdateNumber (g_szDominoHealth, "DAOS.Catalog.Status", CatalogStatus);
-    }
-
-    fprintf (fp, "%s_daos_status %d\n", g_szDominoHealth, g_StatusDAOS);
-    fprintf (fp, "%s_daos_catalog_status %d\n", g_szDominoHealth, CatalogStatus);
-
-    return NOERROR;
-}
-
-
-int HasFileExtension (const char *pszFilename, const char *pszExt)
-{
-    size_t len_f = strlen (pszFilename);
-    size_t len_e = strlen (pszExt);
-
-    if (len_f < len_e)
-        return 0;
-
-    return strcmp (pszFilename + len_f - len_e, pszExt) == 0;
-}
-
 size_t GetTranslogExtendNumber (const char *pszFilename)
 {
     size_t num   = 0;
@@ -957,6 +790,411 @@ size_t GetTranslogExtendNumber (const char *pszFilename)
 
     return num;
 }
+
+
+bool WriteHelpAndType (FILE *fp, const char *pszPrefix, const char *pszStatName, const char *pszType, const char *pszDescription)
+{
+    if (NULL == fp)
+        return false;
+
+    if (NULL == pszPrefix)
+        return false;
+
+    if (NULL == pszStatName)
+        return false;
+
+    if (IsNullStr (pszType))
+        pszType = g_szPromTypeGauge;
+
+    if (NULL == pszDescription)
+        pszDescription = g_szEmpty;
+
+    fprintf (fp, "# HELP %s_%s %s\n", pszPrefix, pszStatName, pszDescription);
+    fprintf (fp, "# TYPE %s_%s %s\n", pszPrefix, pszStatName, pszType);
+
+    return true;
+}
+
+
+bool WriteStatsEntryToFile (FILE *fp, const char *pszPrefix, const char *pszStatName, const char *pszDescription, uint64_t ValueNum)
+{
+    if (NULL == fp)
+        return false;
+
+    if (NULL == pszPrefix)
+        return false;
+
+    if (NULL == pszStatName)
+        return false;
+
+    if (false == WriteHelpAndType (fp, pszPrefix, pszStatName, NULL, pszDescription))
+        return false;
+
+    fprintf (fp, "%s_%s %zu\n", pszPrefix, pszStatName, ValueNum);
+
+    return true;
+}
+
+bool WriteStatsEntryToFile (FILE *fp, const char *pszPrefix, const char *pszStatName, const char *pszDescription, const char *pszValueString)
+{
+    if (NULL == fp)
+        return false;
+
+    if (NULL == pszPrefix)
+        return false;
+
+    if (NULL == pszStatName)
+        return false;
+
+    if (NULL == pszValueString)
+        return false;
+
+    if (false == WriteHelpAndType (fp, pszPrefix, pszStatName, NULL, pszDescription))
+        return false;
+
+    fprintf (fp, "%s_%s %s\n", pszPrefix, pszStatName, pszValueString);
+
+    return true;
+}
+
+
+bool WriteTimedateStat (CONTEXT_STRUCT_TYPE *pStats, const char *pszStatName, const char *pszDescription, void *pValue)
+{
+    uint64_t EpochTime = 0;
+
+    if (NULL == pStats)
+        return false;
+
+    if (NULL == pStats->fp)
+        return false;
+
+    if (NULL == pszStatName)
+        return false;
+
+    if (NULL == pValue)
+        return false;
+
+    EpochTime = TimeDateToEpoch ((TIMEDATE *) pValue);
+
+    if (0 == EpochTime)
+        return false;
+
+    WriteStatsEntryToFile (pStats->fp, g_szDominoHealth, pszStatName, pszDescription, EpochTime);
+
+    return true;
+}
+
+
+STATUS LNCALLBACK DomExportTraverse (void *pContext, char *pszFacility, char *pszStatName, WORD wValueType, void *pValue)
+{
+    STATUS error          = NOERROR;
+    WORD   wLen           = 0;
+    NFMT   NumberFormat   = {0};
+
+    char   szDescription[1024]  = {0};
+    char   szMetric[1024]      = {0};
+    char   szMetricLower[1024] = {0};
+    char   szValue[1024]       = {0};
+
+    CONTEXT_STRUCT_TYPE *pStats = (CONTEXT_STRUCT_TYPE*)pContext;
+
+    if (NULL == pStats)
+        return ERR_MISC_INVALID_ARGS;
+
+    if (NULL == pStats->fp)
+        return ERR_MISC_INVALID_ARGS;
+
+    pStats->CountAll++;
+
+    if (NULL == pszFacility)
+    {
+        pStats->CountInvalid++;
+        return ERR_MISC_INVALID_ARGS;
+    }
+
+    if (NULL == pszStatName)
+    {
+        pStats->CountInvalid++;
+        return ERR_MISC_INVALID_ARGS;
+    }
+
+    if (NULL == pValue)
+        return NOERROR;
+
+    /* Exclude Domino Health stats because they are maintained in this application */
+    if (g_wWriteDominoHealthStats)
+    {
+        if (0 == CompareCaseInsensitive (pszFacility, g_szDominoHealth))
+        {
+            return NOERROR;
+        }
+    }
+
+    NumberFormat.Digits = 2;
+    NumberFormat.Format = NFMT_GENERAL;
+
+    snprintf (szMetric, sizeof (szMetric), "%s.%s", pszFacility, pszStatName);
+
+    OSTranslate32 (OS_TRANSLATE_UPPER_TO_LOWER, szMetric, MAXDWORD, szMetricLower, sizeof (szMetricLower));
+
+    if (g_StatsFilter.ShouldExclude (szMetricLower))
+    {
+        return NOERROR;
+    }
+
+    /* Use the combined and converted metric for statistic name conversion */
+    ReplaceChars (szMetric);
+
+    snprintf (szDescription, sizeof (szDescription), "Domino Statistic %s.%s", pszFacility, pszStatName);
+
+    switch (wValueType)
+    {
+        case VT_TEXT:
+
+            pStats->CountText++;
+
+            if (0 == CompareCaseInsensitive (szMetric, "DAOS_Engine_Status"))
+            {
+                UpdateStatusDAOS ((const char *)pValue);
+            }
+            else if (0 == CompareCaseInsensitive (szMetric, "DAOS_Engine_Catalog"))
+            {
+                UpdateCatalogDAOS ((const char *)pValue);
+            }
+            else if (0 == CompareCaseInsensitive (szMetric, "DominoBackup_LastBackup_DB_Status"))
+            {
+                WriteStatsEntryToFile (pStats->fp, g_szDominoHealth, "LastBackup_DB_Status", szDescription, CompareCaseInsensitive ((const char *)pValue, "Successful") ? "1" : "0");
+            }
+            else if (0 == CompareCaseInsensitive (szMetric, "DominoBackup_LastBackup_TL_Status"))
+            {
+                WriteStatsEntryToFile (pStats->fp, g_szDominoHealth, "LastBackup_TL_Status", szDescription, CompareCaseInsensitive ((const char *)pValue, "Successful") ? "1" : "0");
+            }
+            else if (0 == CompareCaseInsensitive (szMetric, "DominoBackup_LastBackup_TL_LastLogExtend"))
+            {
+                WriteStatsEntryToFile (pStats->fp, g_szDominoHealth, "LastBackup_TL_LastLogExtendNumber", szDescription, CompareCaseInsensitive ((const char *)pValue, "Successful") ? "1" : "0");
+            }
+
+            if (pStats->bExportText)
+            {
+                snprintf (szValue, sizeof (szValue), "%s", (char *)pValue);
+
+                TruncateAtFirstBlank (szValue);
+                WriteStatsEntryToFile (pStats->fp, pStats->szPrefix, szMetric, szDescription, szValue);
+            }
+            break;
+
+        case VT_LONG:
+
+            pStats->CountLong++;
+
+            if (pStats->bExportLong)
+            {
+                WriteStatsEntryToFile (pStats->fp, pStats->szPrefix, szMetric, szDescription, *(LONG *) pValue);
+            }
+            break;
+
+        case VT_NUMBER:
+
+            pStats->CountNumber++;
+
+            if (pStats->bExportLong)
+            {
+                error = ConvertFLOATToText (&(pStats->Intl), &NumberFormat, (NUMBER *)pValue, szValue, sizeof (szValue)-1, &wLen);
+                if (error)
+                {
+                    pStats->CountInvalid++;
+                }
+                else
+                {
+                    szValue[wLen] = '\0';
+                    WriteStatsEntryToFile (pStats->fp, pStats->szPrefix, szMetric, szDescription, szValue);
+                }
+            }
+            break;
+
+        case VT_TIMEDATE:
+
+            pStats->CountTime++;
+
+            if (0 == CompareCaseInsensitive (szMetric, "DominoBackup_LastBackup_DB_Time"))
+            {
+                WriteTimedateStat (pStats, "LastBackup_DB_EpochTime", szDescription, pValue);
+            }
+
+            else if (0 == CompareCaseInsensitive (szMetric, "DominoBackup_LastBackup_TL_Time"))
+            {
+                WriteTimedateStat (pStats, "LastBackup_TL_EpochTime", szDescription, pValue);
+            }
+
+            else if (0 == CompareCaseInsensitive (szMetric, "Server_Time_Start"))
+            {
+                WriteTimedateStat (pStats, "Server_Time_Start", szDescription, pValue);
+            }
+
+            if (pStats->bExportTime)
+            {
+                if (GetNotesTimeDateSting ((TIMEDATE *)pValue, sizeof (szValue), szValue))
+                {
+                    pStats->CountInvalid++;
+                }
+                else
+                {
+                    WriteStatsEntryToFile (pStats->fp, pStats->szPrefix, szMetric, szDescription, szValue);
+                }
+            }
+            break;
+
+        default:
+
+            pStats->CountUnknown++;
+            break;
+
+    } /* switch */
+
+    return error;
+}
+
+
+void AddDiskStats (const char *pszHealthPrefix, const char *pszComponent, const char *pszPathName, uint64_t TotalBytes, uint64_t FreeBytes)
+{
+    char szBuffer[1024] = {0};
+
+    // total bytes
+    snprintf(
+        szBuffer,
+        sizeof (szBuffer),
+        "%s_disk_total_bytes{component=\"%s\", path=\"%s\"} %" PRIu64,
+        pszHealthPrefix,
+        pszComponent,
+        pszPathName,
+        TotalBytes);
+
+    g_ListDiskTotalStats.emplace_back (szBuffer);
+
+    // free bytes
+    snprintf(
+        szBuffer,
+        sizeof(szBuffer),
+        "%s_disk_free_bytes{component=\"%s\", path=\"%s\"} %" PRIu64,
+        pszHealthPrefix,
+        pszComponent,
+        pszPathName,
+        FreeBytes);
+
+    g_ListDiskFreeStats.emplace_back (szBuffer);
+}
+
+STATUS ProcessSingleDiskStat (const char *pszPathName, const char *pszComponent)
+{
+    bool     bFound     = false;
+    uint64_t TotalBytes = 0;
+    uint64_t FreeBytes  = 0;
+    char     szMetric[1024] = {0};
+
+    if (IsNullStr (pszPathName))
+        return ERR_MISC_INVALID_ARGS;
+
+    if (IsNullStr (pszComponent))
+        return ERR_MISC_INVALID_ARGS;
+
+    bFound = GetDiskUsageFrom (pszPathName, &TotalBytes, &FreeBytes);
+
+    if (g_wWriteDominoHealthStats)
+    {
+        snprintf (szMetric, sizeof (szMetric), "Disk.%s.Total_MB", pszComponent);
+        StatUpdateNumberBytesInMB (g_szDominoHealth, szMetric, TotalBytes);
+
+        snprintf (szMetric, sizeof (szMetric), "Disk.%s.Free_MB", pszComponent);
+        StatUpdateNumberBytesInMB (g_szDominoHealth, szMetric, FreeBytes);
+
+        snprintf (szMetric, sizeof (szMetric), "Disk.%s.Path", pszComponent);
+        StatUpdateText (g_szDominoHealth, szMetric, pszPathName);
+    }
+
+    if (false == bFound)
+    {
+        return NOERROR;
+    }
+
+    AddDiskStats (g_szDominoHealth, pszComponent, pszPathName, TotalBytes, FreeBytes);
+
+    return NOERROR;
+}
+
+
+STATUS ProcessDiskStats (FILE *fp)
+{
+    if (NULL == fp)
+        return ERR_MISC_INVALID_ARGS;
+
+    ProcessSingleDiskStat (g_szDataDir,     DOMPROM_DISK_COMPONENT_NOTESDATA);
+    ProcessSingleDiskStat (g_szDirTranslog, DOMPROM_DISK_COMPONENT_TRANSLOG);
+    ProcessSingleDiskStat (g_szDirDAOS,     DOMPROM_DISK_COMPONENT_DAOS);
+    ProcessSingleDiskStat (g_szDirNIF,      DOMPROM_DISK_COMPONENT_NIF);
+    ProcessSingleDiskStat (g_szDirFT,       DOMPROM_DISK_COMPONENT_FT);
+    ProcessSingleDiskStat (g_szNotesTemp,   DOMPROM_DISK_COMPONENT_NOTES_TEMP);
+    ProcessSingleDiskStat (g_szViewRebuild, DOMPROM_DISK_COMPONENT_VIEW_REBUILD);
+    ProcessSingleDiskStat (g_szNotesLogDir, DOMPROM_DISK_COMPONENT_NOTES_LOG_DIR);
+
+    WriteHelpAndType (fp, g_szDominoHealth, "disk_total_bytes", NULL, "Total disk size in bytes");
+
+    for (const auto &pszLine : g_ListDiskTotalStats)
+    {
+        fprintf (fp, "%s\n", pszLine.c_str());
+    }
+
+    g_ListDiskTotalStats.clear();
+
+    WriteHelpAndType (fp, g_szDominoHealth, "disk_free_bytes", NULL, "Free disk space in bytes");
+
+    for (const auto &pszLine : g_ListDiskFreeStats)
+    {
+        fprintf (fp, "%s\n", pszLine.c_str());
+    }
+
+    g_ListDiskFreeStats.clear();
+
+    return NOERROR;
+}
+
+STATUS ProcessDaosStats (FILE *fp)
+{
+    int CatalogStatus = 1;
+
+    if (NULL == fp)
+        return ERR_MISC_INVALID_ARGS;
+
+    if (0 == g_StatusDAOS)
+        CatalogStatus = -1;
+    else if (g_CatalogInSyncDAOS)
+        CatalogStatus = 0;
+    else
+        CatalogStatus = 1;
+
+    if (g_wWriteDominoHealthStats)
+    {
+        StatUpdateNumber (g_szDominoHealth, "DAOS.Status", g_StatusDAOS);
+        StatUpdateNumber (g_szDominoHealth, "DAOS.Catalog.Status", CatalogStatus);
+    }
+
+    WriteStatsEntryToFile (fp, g_szDominoHealth, "daos_status",         "Domino DAOS enabled", g_StatusDAOS);
+    WriteStatsEntryToFile (fp, g_szDominoHealth, "daos_catalog_status", "Domino DAOS Catalog status (0 = in sync)", g_StatusDAOS);
+
+    return NOERROR;
+}
+
+
+int HasFileExtension (const char *pszFilename, const char *pszExt)
+{
+    size_t len_f = strlen (pszFilename);
+    size_t len_e = strlen (pszExt);
+
+    if (len_f < len_e)
+        return 0;
+
+    return strcmp (pszFilename + len_f - len_e, pszExt) == 0;
+}
+
 
 STATUS CheckTransLogExtend (const char *pszTranslogExtend)
 {
@@ -1073,7 +1311,7 @@ STATUS ProcessTranslogStats (FILE *fp)
     if (NULL == fp)
         return ERR_MISC_INVALID_ARGS;
 
-    fprintf (fp, "%s_translog_style %u\n", g_szDominoHealth, g_wTranslogLogType);
+    WriteStatsEntryToFile (fp, g_szDominoHealth, "translog_style", "Domino Statistic Database.RM.Sys.Log.Type", g_wTranslogLogType);
 
     if (g_wWriteDominoHealthStats)
     {
@@ -1099,15 +1337,15 @@ STATUS ProcessTranslogStats (FILE *fp)
         StatUpdateNumber (g_szDominoHealth, "Translog.File.Max",   g_TranslogMaxLogExtend);
     }
 
-    fprintf (fp, "%s_translog_file_count %zu\n", g_szDominoHealth, NumTranslogFiles);
+    WriteStatsEntryToFile (fp, g_szDominoHealth, "translog_file_count", "Number of current Transaction Log Extends in Translog directory", NumTranslogFiles);
 
     if (0 == NumTranslogFiles)
     {
         goto Done;
     }
 
-    fprintf (fp, "%s_translog_file_min %zu\n", g_szDominoHealth, g_TranslogMinLogExtend);
-    fprintf (fp, "%s_translog_file_max %zu\n", g_szDominoHealth, g_TranslogMaxLogExtend);
+    WriteStatsEntryToFile (fp, g_szDominoHealth, "translog_file_min", "Lowest Transaction Log Extend Number in Translog directory", g_TranslogMinLogExtend);
+    WriteStatsEntryToFile (fp, g_szDominoHealth, "translog_file_max", "Highest Transaction Log Extend Number in Translog directory", g_TranslogMaxLogExtend);
 
 Done:
 
@@ -1239,7 +1477,7 @@ typedef struct _STAT_ROW {
 
 /* ---------- parser ---------- */
 
-bool ParseOneStatsRow (const char **ppsz, STAT_ROW *pRow)
+bool ParseOneTransStatsRow (const char **ppsz, STAT_ROW *pRow)
 {
     if (false == ParseGetString (ppsz, pRow->szName, sizeof(pRow->szName)))
         return false;
@@ -1264,67 +1502,119 @@ bool ParseOneStatsRow (const char **ppsz, STAT_ROW *pRow)
 }
 
 
-STATUS WriteStat (FILE *fp, const char *pszTransName, const char *pszStatName, int StatsValue)
+static bool AddUnique (std::list<std::string> &list, const char *pszValue)
 {
-    STATUS error = NOERROR;
+    for (const auto &entry : list)
+    {
+        if (entry == pszValue)
+        {
+            return false; // already present
+        }
+    }
 
-    char  szTrans[1024] = {0};
+    list.emplace_back (pszValue);
 
-    if (NULL == fp)
-        return ERR_MISC_INVALID_ARGS;
-
-    if (IsNullStr (pszTransName))
-        return ERR_MISC_INVALID_ARGS;
-
-    if (IsNullStr (pszStatName))
-        return ERR_MISC_INVALID_ARGS;
-
-    snprintf (szTrans, sizeof (szTrans), "%s", pszTransName);
-    ReplaceChars (szTrans);
-
-    fprintf (fp, "%s{op=\"%s\",stat=\"%s\"} %d\n", g_szDominoTrans, szTrans, pszStatName, StatsValue);
-
-    return error;
+    return true;
 }
 
 
-int ParseStatsBuffer (const char *pszBuffer, FILE *fp)
+bool AddTransactionStats (const char *pszMetricPrefix, const char *pszOp, int Count, int TotalMs)
 {
-    int rows = 0;
-    const char *psz = NULL;
+    char szBuffer[1024] = {0};
+
+    if (IsNullStr (pszMetricPrefix))
+        return false;
+
+    if (IsNullStr (pszOp))
+        return false;
+
+    // count
+    snprintf(
+        szBuffer,
+        sizeof(szBuffer),
+        "%s_count{op=\"%s\"} %d",
+        pszMetricPrefix,
+        pszOp,
+        Count);
+
+    AddUnique (g_ListTransCountStats, szBuffer);
+
+    // total_ms
+    snprintf(
+        szBuffer,
+        sizeof(szBuffer),
+        "%s_total_ms{op=\"%s\"} %d",
+        pszMetricPrefix,
+        pszOp,
+        TotalMs);
+
+    AddUnique(g_ListTransTotalMsStats, szBuffer);
+
+    return true;
+}
+
+
+void PrintAndClearTransStats (FILE *fp)
+{
+    if (NULL == fp)
+        return;
+
+    WriteHelpAndType (fp, g_szDominoTrans, "count", "counter", "Transaction count");
+
+    for (const auto &pszLine : g_ListTransCountStats)
+    {
+        fprintf(fp, "%s\n", pszLine.c_str());
+    }
+
+    WriteHelpAndType (fp, g_szDominoTrans, "total_ms", "counter", "Total transaction time in milliseconds");
+
+    for (const auto &pszLine : g_ListTransTotalMsStats)
+    {
+        fprintf(fp, "%s\n", pszLine.c_str());
+    }
+
+    g_ListTransCountStats.clear();
+    g_ListTransTotalMsStats.clear();
+}
+
+
+DWORD ParseTransStatsBuffer (const char *pszBuffer)
+{
+    DWORD dwStatsCount = 0;
+    const char *pszLine = NULL;
     STAT_ROW stRow = {0};
 
-    if (IsNullStr(pszBuffer))
-        return 0;
-
-    if (NULL == fp)
+    if (IsNullStr (pszBuffer))
         return 0;
 
     /* find header line */
-    psz = strstr (pszBuffer, "Function");
+    pszLine = strstr (pszBuffer, "Function");
 
-    if (NULL == psz)
+    if (NULL == pszLine)
         return 0;
 
     /* skip to next line */
-    if (false == ParseSkipToNextLine (&psz))
+    if (false == ParseSkipToNextLine (&pszLine))
         goto Done;
 
     /* skip another empty line */
-    if (false == ParseSkipToNextLine (&psz))
+    if (false == ParseSkipToNextLine (&pszLine))
         goto Done;
 
-    while (ParseOneStatsRow (&psz, &stRow))
+    while (ParseOneTransStatsRow (&pszLine, &stRow))
     {
-        WriteStat (fp, stRow.szName, "count",    stRow.iCount);
-        WriteStat (fp, stRow.szName, "total_ms", stRow.iTotal);
-        WriteStat (fp, stRow.szName, "avg_ms",   stRow.iAverage);
-        rows++;
+        /* Replace blanks and other invalid chars for transaction names */
+        ReplaceChars (stRow.szName);
+
+        if (AddTransactionStats (g_szDominoTrans, stRow.szName, stRow.iCount, stRow.iTotal))
+        {
+            dwStatsCount++;
+        }
     }
 
 Done:
 
-    return rows;
+    return dwStatsCount;
 }
 
 
@@ -1365,6 +1655,8 @@ STATUS ProcessTransStats (const char *pszFilename, DWORD dwIntervalSeconds)
     FILE    *fp          = NULL;
     char    szTempFilename[MAXPATH+1] = {0};
 
+    DWORD dwStatsCount = 0;
+
     TIMEDATE tNow = {0};
 
     OSCurrentTIMEDATE (&tNow);
@@ -1381,16 +1673,6 @@ STATUS ProcessTransStats (const char *pszFilename, DWORD dwIntervalSeconds)
 
     OSCurrentTIMEDATE (&g_tNextTransStatsUpdate);
     TimeDateAdjust(&g_tNextTransStatsUpdate, dwIntervalSeconds, 0, 0, 0, 0, 0);
-
-    snprintf (szTempFilename, sizeof (szTempFilename),  "%s.tmp", pszFilename);
-
-    fp = fopen (szTempFilename, "w");
-
-    if (NULL == fp)
-    {
-        perror ("Cannot create stats temp file");
-        goto Done;
-    }
 
     error = NSFRemoteConsole (g_szLocalUser, "!show trans", &hRetInfo);
 
@@ -1414,7 +1696,23 @@ STATUS ProcessTransStats (const char *pszFilename, DWORD dwIntervalSeconds)
         goto Done;
     }
 
-    ParseStatsBuffer ((const char *) pInfoBuffer, fp);
+    snprintf (szTempFilename, sizeof (szTempFilename),  "%s.tmp", pszFilename);
+
+    fp = fopen (szTempFilename, "w");
+
+    if (NULL == fp)
+    {
+        AddInLogMessageText ("%s: Cannot create transaction file: %s", 0, g_szTask, pszFilename);
+        perror ("Cannot create stats temp file");
+        goto Done;
+    }
+
+    dwStatsCount = ParseTransStatsBuffer ((const char *) pInfoBuffer);
+
+    if (dwStatsCount)
+    {
+        PrintAndClearTransStats (fp);
+    }
 
 Done:
 
@@ -1442,6 +1740,19 @@ Done:
 }
 
 
+void WriteExporterVerStat (FILE *fp)
+{
+    char szHelp[256] = {0};
+
+    if (NULL == fp)
+        return;
+
+    snprintf (szHelp, sizeof (szHelp), "Domino Prometheus Exporter build version %s", DOMPROM_VERSION);
+
+    WriteStatsEntryToFile (fp, g_szDominoHealth, "Exporter_Build", szHelp, DOMPROM_VERSION_BUILD);
+}
+
+
 STATUS LNPUBLIC GetDominoStatsTraverse (const char *pszFilename)
 {
     STATUS   error = NOERROR;
@@ -1454,7 +1765,7 @@ STATUS LNPUBLIC GetDominoStatsTraverse (const char *pszFilename)
         return ERR_MISC_INVALID_ARGS;
 
     if (0 == OSGetEnvironmentLong (ENV_DOMPROM_NO_PREFIX))
-        snprintf (Stats.szPrefix, sizeof (Stats.szPrefix), "Domino_");
+        snprintf (Stats.szPrefix, sizeof (Stats.szPrefix), "Domino");
 
     /* Define which stat types to export (Only numeric values make sense for Prometheus/Grafana) */
     Stats.bExportLong   = TRUE;
@@ -1510,11 +1821,12 @@ STATUS LNPUBLIC GetDominoStatsTraverse (const char *pszFilename)
         }
     }
 
-    ProcessDiskStats     (Stats.fp);
     ProcessDaosStats     (Stats.fp);
     ProcessTranslogStats (Stats.fp);
+    ProcessDiskStats     (Stats.fp);
+    WriteExporterVerStat (Stats.fp);
 
-    fprintf (Stats.fp, "%s_StatUpdateEpochTime %lu\n", g_szDominoHealth, EpochSec);
+    WriteStatsEntryToFile (Stats.fp, g_szDominoHealth, "StatUpdateEpochTime", "Domino Prometheus last update epoch time", EpochSec);
 
 Done:
 
@@ -1533,6 +1845,7 @@ BOOL GetEnvironmentVars (BOOL bForce)
 {
     static WORD SeqNo  = 0;
     WORD   wTempSeqNo  = 0;
+    DWORD  dwInterval  = 0;
 
     wTempSeqNo = OSGetEnvironmentSeqNo();
 
@@ -1557,17 +1870,19 @@ BOOL GetEnvironmentVars (BOOL bForce)
     if (g_dwIntervalSec < DOMPROM_MINIMUM_INTERVAL_SEC)
         g_dwIntervalSec = DOMPROM_MINIMUM_INTERVAL_SEC;
 
-    if (0 == g_dwTransIntervalSec)
-        g_dwTransIntervalSec = DOMPROM_MINIMUM_TRANS_INTERVAL_SEC;
+    dwInterval = (DWORD) OSGetEnvironmentLong (ENV_DOMPROM_INTERVAL_TRANS);
 
-    if (g_dwTransIntervalSec < DOMPROM_MINIMUM_TRANS_INTERVAL_SEC)
-        g_dwTransIntervalSec = DOMPROM_MINIMUM_TRANS_INTERVAL_SEC;
+    if (dwInterval < DOMPROM_MINIMUM_TRANS_INTERVAL_SEC)
+        dwInterval = DOMPROM_MINIMUM_TRANS_INTERVAL_SEC;
 
-    if (0 == g_dwIOStatIntervalSec)
-        g_dwIOStatIntervalSec = DOMPROM_MINIMUM_IOSTAT_INTERVAL_SEC;
+    g_dwTransIntervalSec = dwInterval;
 
-    if (g_dwIOStatIntervalSec < DOMPROM_MINIMUM_IOSTAT_INTERVAL_SEC)
-        g_dwIOStatIntervalSec = DOMPROM_MINIMUM_IOSTAT_INTERVAL_SEC;
+    dwInterval = (DWORD) OSGetEnvironmentLong (ENV_DOMPROM_INTERVAL_IOSTAT);
+
+    if (dwInterval < DOMPROM_MINIMUM_IOSTAT_INTERVAL_SEC)
+        dwInterval = DOMPROM_MINIMUM_IOSTAT_INTERVAL_SEC;
+
+    g_dwIOStatIntervalSec = dwInterval;
 
     return TRUE;
 }
@@ -1651,8 +1966,28 @@ void GetDiskStatNamesFromNotesIni()
 void PrintHelp()
 {
     AddInLogMessageText ("Syntax: %s ", 0, g_szTask);
+    AddInLogMessageText ("", 0);
+    AddInLogMessageText ("Parameters", 0);
+    AddInLogMessageText ("---------------------", 0);
+
     AddInLogMessageText ("-v     Verbose logging", 0);
-    AddInLogMessageText ("-t     Write transactions", 0);
+    AddInLogMessageText ("-t     Write transactions via 'show trans'", 0);
+    AddInLogMessageText ("-i     Collect Domino IOSTAT via 'show iostat'", 0);
+
+    AddInLogMessageText ("", 0);
+    AddInLogMessageText ("Environment variables", 0);
+    AddInLogMessageText ("---------------------", 0);
+
+    AddInLogMessageText ("domprom_loglevel          Verbose logging", 0);
+    AddInLogMessageText ("domprom_outdir            Statistics directory for *.prom files (default: <notesdata>/domino/stats", 0);
+    AddInLogMessageText ("domprom_outfile           Override Domino Stats file (default: %s)", 0, g_szDominoProm);
+    AddInLogMessageText ("domprom_trans_outfile     Override Domino Transactions Stats file (default: %s)", 0, g_szDominoTransProm);
+    AddInLogMessageText ("domprom_interval          Interval to collect stats in seconds (default: %u)", 0, DOMPROM_DEFAULT_INTERVAL_SEC);
+    AddInLogMessageText ("domprom_no_domino_prefix  Disable the new 'Domino_' prefix ", 0);
+    AddInLogMessageText ("domprom_collect_trans     Enable collecting transactions via 'show trans' output", 0);
+    AddInLogMessageText ("domprom_collect_iostat    Enable collecting Domino IOSTAT data via 'show iostat'", 0);
+    AddInLogMessageText ("domprom_interval_trans    Interval to collect transactions in seconds (default: %u)", 0, DOMPROM_DEFAULT_TRANS_INTERVAL_SEC);
+    AddInLogMessageText ("domprom_interval_iostat   Interval to collect Domino IOSTAT data in seconds (default: %u)", 0, DOMPROM_DEFAULT_IOSTAT_INTERVAL_SEC);
 }
 
 
@@ -1675,11 +2010,15 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
     char    ch = '\0';
     char    *pParam = NULL;
 
+    MQHANDLE hQueue = NULLHANDLE;
+
     AddInQueryDefaults    (&hMod, &hOldStatusLine);
     AddInDeleteStatusLine (hOldStatusLine);
 
     hStatusLineDesc = AddInCreateStatusLine (g_szTaskLong);
     AddInSetDefaults (hMod, hStatusLineDesc);
+
+    snprintf (g_szVersion, sizeof (g_szVersion), "%d.%d.%d", DOMPROM_VERSION_MAJOR, DOMPROM_VERSION_MINOR, DOMPROM_VERSION_PATCH);
 
     error = SECKFMGetUserName (g_szLocalUser);
 
@@ -1752,6 +2091,23 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
 
     } /* for */
 
+    error = MQCreate (MsgQueueName, 0, 0);
+
+    if (error)
+    {
+        error = NOERROR;
+        AddInLogMessageText ("%s: Servertask already started", 0, g_szTask);
+        goto Done;
+    }
+
+    error = MQOpen (MsgQueueName, 0, &hQueue);
+
+    if (error)
+    {
+        AddInLogMessageText ("%s: Cannot open message queue", error, g_szTask);
+        goto Done;
+    }
+
     // Add Include/Exclude rules - Names must be specified all LOWERCASE!
 
     // Exclude platform stats in general and just include relevant stats to not pollute stats
@@ -1812,7 +2168,7 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
     /* Else check for OS level defined stats directory */
     if ('\0' == *szStatsDirName)
     {
-        pEnv = getenv (ENV_OS_DOMPROM_STATS_DIR);
+        pEnv = getenv (ENV_DOMPROM_STATS_DIR);
 
         if (pEnv)
         {
@@ -1838,7 +2194,7 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
 
     AddInLogMessageText ("%s: Domino Prometheus Exporter %s", 0, g_szTask, g_szVersion);
 
-    AddInLogMessageText ("%s: Statistics Interval: %u seconds, File: %s,", 0, g_szTask, g_dwIntervalSec, szStatsFilename);
+    AddInLogMessageText ("%s: Statistics Interval: %u seconds, File: %s", 0, g_szTask, g_dwIntervalSec, szStatsFilename);
 
     if (g_wCollectDominoTransStats)
     {
@@ -1889,6 +2245,12 @@ invalid_syntax:
     AddInLogMessageText ("%s: Invalid syntax", 0, g_szTask);
 
 Done:
+
+    if (hQueue)
+    {
+        MQClose (hQueue, 0);
+        hQueue = NULLHANDLE;
+    }
 
     AddInLogMessageText ("%s: Terminated", 0, g_szTask);
 
