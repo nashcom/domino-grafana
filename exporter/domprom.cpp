@@ -371,6 +371,41 @@ int FileExists (const char *pszFilename)
 }
 
 
+int RemoveFile (const char *pszFilename, WORD wLogLevel)
+{
+    int ret = 0;
+
+    if (IsNullStr (pszFilename))
+        return 0;
+
+    if (0 == FileExists (pszFilename))
+    {
+        if (wLogLevel > 1)
+        {
+            AddInLogMessageText ("%s: File does not exist when deleting: %s", 0, g_szTask, pszFilename);
+        }
+
+        return 0;
+    }
+
+    ret = remove (pszFilename);
+
+    if (FileExists (pszFilename))
+    {
+        AddInLogMessageText ("%s: File cannot be deleted: %s", 0, g_szTask, pszFilename);
+    }
+    else
+    {
+        if (wLogLevel)
+        {
+            AddInLogMessageText ("%s: Info: File deleted %s", 0, g_szTask, pszFilename);
+        }
+    }
+
+    return ret;
+}
+
+
 bool CreateDirIfNotExists (const char *pszFilename)
 {
     int  ret = 0;
@@ -1178,7 +1213,7 @@ STATUS ProcessDaosStats (FILE *fp)
     }
 
     WriteStatsEntryToFile (fp, g_szDominoHealth, "daos_status",         "Domino DAOS enabled", g_StatusDAOS);
-    WriteStatsEntryToFile (fp, g_szDominoHealth, "daos_catalog_status", "Domino DAOS Catalog status (0 = in sync)", g_StatusDAOS);
+    WriteStatsEntryToFile (fp, g_szDominoHealth, "daos_catalog_status", "Domino DAOS Catalog status (0 = in sync)", g_CatalogInSyncDAOS);
 
     return NOERROR;
 }
@@ -1661,6 +1696,8 @@ STATUS ProcessTransStats (const char *pszFilename, DWORD dwIntervalSeconds)
 
     OSCurrentTIMEDATE (&tNow);
 
+    uint64_t EpochSec = (uint64_t) time (NULL);
+
     if (IsNullStr (pszFilename))
     {
         return ERR_MISC_INVALID_ARGS;
@@ -1713,6 +1750,8 @@ STATUS ProcessTransStats (const char *pszFilename, DWORD dwIntervalSeconds)
     {
         PrintAndClearTransStats (fp);
     }
+
+    WriteStatsEntryToFile (fp, g_szDominoTrans, "StatUpdateEpochTime", "Domino Transactions last update epoch time", EpochSec);
 
 Done:
 
@@ -1826,7 +1865,7 @@ STATUS LNPUBLIC GetDominoStatsTraverse (const char *pszFilename)
     ProcessDiskStats     (Stats.fp);
     WriteExporterVerStat (Stats.fp);
 
-    WriteStatsEntryToFile (Stats.fp, g_szDominoHealth, "StatUpdateEpochTime", "Domino Prometheus last update epoch time", EpochSec);
+    WriteStatsEntryToFile (Stats.fp, g_szDominoHealth, "StatUpdateEpochTime", "Domino last update epoch time", EpochSec);
 
 Done:
 
@@ -1841,7 +1880,7 @@ Done:
     return error;
 }
 
-BOOL GetEnvironmentVars (BOOL bForce)
+BOOL GetEnvironmentVars (BOOL bFirstTime)
 {
     static WORD SeqNo  = 0;
     WORD   wTempSeqNo  = 0;
@@ -1849,7 +1888,7 @@ BOOL GetEnvironmentVars (BOOL bForce)
 
     wTempSeqNo = OSGetEnvironmentSeqNo();
 
-    if (FALSE == bForce)
+    if (FALSE == bFirstTime)
         if (wTempSeqNo == SeqNo)
             return FALSE;
 
@@ -1875,14 +1914,31 @@ BOOL GetEnvironmentVars (BOOL bForce)
     if (dwInterval < DOMPROM_MINIMUM_TRANS_INTERVAL_SEC)
         dwInterval = DOMPROM_MINIMUM_TRANS_INTERVAL_SEC;
 
-    g_dwTransIntervalSec = dwInterval;
+    if (g_dwTransIntervalSec != dwInterval)
+    {
+        if (false == bFirstTime)
+        {
+            AddInLogMessageText ("%s: Changed %s from %u to %u", 0, g_szTask, ENV_DOMPROM_INTERVAL_TRANS, g_dwTransIntervalSec, dwInterval);
+        }
+
+        g_dwTransIntervalSec = dwInterval;
+
+    }
 
     dwInterval = (DWORD) OSGetEnvironmentLong (ENV_DOMPROM_INTERVAL_IOSTAT);
 
     if (dwInterval < DOMPROM_MINIMUM_IOSTAT_INTERVAL_SEC)
         dwInterval = DOMPROM_MINIMUM_IOSTAT_INTERVAL_SEC;
 
-    g_dwIOStatIntervalSec = dwInterval;
+    if (g_dwIOStatIntervalSec != dwInterval)
+    {
+        if (false == bFirstTime)
+        {
+            AddInLogMessageText ("%s: Changed %s from %u to %u", 0, g_szTask, ENV_DOMPROM_INTERVAL_TRANS, g_dwIOStatIntervalSec, dwInterval);
+        }
+
+        g_dwIOStatIntervalSec = dwInterval;
+    }
 
     return TRUE;
 }
@@ -2221,13 +2277,19 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
         if (g_wCollectDominoIOStat)
             ProcessIOStat (g_dwIOStatIntervalSec);
 
-        snprintf (szStatus, sizeof (szStatus), "Idle (Interval: %u)", g_dwIntervalSec);
+        if (g_wCollectDominoTransStats)
+            snprintf (szStatus, sizeof (szStatus), "Idle (Int: %u / TxInt: %u)", g_dwIntervalSec, g_dwTransIntervalSec);
+        else
+            snprintf (szStatus, sizeof (szStatus), "Idle (Int: %u)", g_dwIntervalSec);
+
         AddInSetStatusText (szStatus);
 
-        GetEnvironmentVars(FALSE);
-
-        for (dwSeconds = 0;  dwSeconds < g_dwIntervalSec; dwSeconds++)
+        for (dwSeconds = 0; dwSeconds < g_dwIntervalSec; dwSeconds++)
         {
+            /* Don't check environment vars too often */
+            if ( 0 == (dwSeconds % 10))
+                GetEnvironmentVars (FALSE);
+
             if (AddInIdleDelay (1000))
             {
                 g_ShutdownPending = 1;
@@ -2237,14 +2299,20 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
 
     } /* while */
 
-    DeleteAllStatsForPackage (g_szDominoHealth);
-
     goto Done;
 
 invalid_syntax:
+
     AddInLogMessageText ("%s: Invalid syntax", 0, g_szTask);
 
 Done:
+
+    DeleteAllStatsForPackage (g_szDominoHealth);
+
+    /* Remove stats files on shutdown to not leave any stale *.prom stats files */
+
+    RemoveFile (szTransFilename, 1);
+    RemoveFile (szStatsFilename, 1);
 
     if (hQueue)
     {
