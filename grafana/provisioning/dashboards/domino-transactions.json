@@ -15,10 +15,10 @@
       }
     ]
   },
+  "description": "HCL Domino Transactions Example",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": 0,
   "links": [],
   "panels": [
     {
@@ -26,7 +26,7 @@
         "type": "prometheus",
         "uid": "DS_PROMETHEUS"
       },
-      "description": "Domino Server Expansion Factor",
+      "description": "Transaction/Min",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -41,7 +41,7 @@
             "barAlignment": 0,
             "barWidthFactor": 0.6,
             "drawStyle": "line",
-            "fillOpacity": 0,
+            "fillOpacity": 1,
             "gradientMode": "hue",
             "hideFrom": {
               "legend": false,
@@ -75,17 +75,18 @@
                 "value": 0
               }
             ]
-          }
+          },
+          "unit": "opm"
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 0,
         "y": 0
       },
-      "id": 4,
+      "id": 5,
       "options": {
         "legend": {
           "calcs": [],
@@ -99,26 +100,225 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.2.1",
+      "pluginVersion": "12.3.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "edhq948fbuosgc"
+            "uid": "PBFA97CFB590B2093"
           },
-          "disableTextWrap": false,
           "editorMode": "code",
-          "expr": "Domino_Server_AvailabilityIndex{instance=\"$node\",job=\"$job\"}",
-          "fullMetaSearch": false,
-          "includeNullMetadata": true,
+          "expr": "increase(DominoTrans_count{instance=\"$node\",job=\"$job\"}[$increase_interval])",
           "instant": false,
           "legendFormat": "__auto",
           "range": true,
-          "refId": "A",
-          "useBackend": false
+          "refId": "A"
         }
       ],
-      "title": "Domino Server Availability Index",
+      "title": "Transaction/Min",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "DS_PROMETHEUS"
+      },
+      "description": "Transaction/Min",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 1,
+            "gradientMode": "hue",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineStyle": {
+              "fill": "solid"
+            },
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "opm"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 3,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "increase(DominoTrans_count{instance=\"$node\",job=\"$job\"}[$increase_interval])",
+          "instant": false,
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Transaction/Min",
+      "transparent": true,
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "DS_PROMETHEUS"
+      },
+      "description": "Avg Response Time",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 1,
+            "gradientMode": "hue",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineStyle": {
+              "fill": "solid"
+            },
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 0,
+        "y": 11
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "rate(DominoTrans_total_ms[30m]) / rate(DominoTrans_count[30m])",
+          "instant": false,
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Avg Response Time",
+      "transparent": true,
       "type": "timeseries"
     },
     {
@@ -186,7 +386,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 0
+        "y": 11
       },
       "id": 2,
       "options": {
@@ -202,7 +402,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.2.1",
+      "pluginVersion": "12.3.1",
       "targets": [
         {
           "datasource": {
@@ -230,7 +430,7 @@
         "type": "prometheus",
         "uid": "DS_PROMETHEUS"
       },
-      "description": "Running Average Time",
+      "description": "GETNOTES_RQST/Min",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -254,11 +454,13 @@
             },
             "insertNulls": false,
             "lineInterpolation": "smooth",
+            "lineStyle": {
+              "fill": "solid"
+            },
             "lineWidth": 2,
             "pointSize": 5,
             "scaleDistribution": {
-              "log": 2,
-              "type": "log"
+              "type": "linear"
             },
             "showPoints": "auto",
             "showValues": false,
@@ -280,57 +482,18 @@
                 "value": 0
               }
             ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "{DominoServer=\"notes_nashcom_de\", __name__=\"Server_LoadMon_TransInfo_RunningAvgTime_OPEN_NOTE\", instance=\"notes.nashcom.de:9100\", job=\"notes_nashcom_de\"}"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "blue",
-                  "mode": "fixed"
-                }
-              }
-            ]
           },
-          {
-            "__systemRef": "hideSeriesFrom",
-            "matcher": {
-              "id": "byNames",
-              "options": {
-                "mode": "exclude",
-                "names": [
-                  "{DominoServer=\"notes.nashcom.de\", instance=\"notes.nashcom.de:9100\", job=\"domino_nashcom\", op=\"OPEN_NOTE\", stat=\"count\"}"
-                ],
-                "prefix": "All except:",
-                "readOnly": true
-              }
-            },
-            "properties": [
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "legend": false,
-                  "tooltip": true,
-                  "viz": true
-                }
-              }
-            ]
-          }
-        ]
+          "unit": "opm"
+        },
+        "overrides": []
       },
       "gridPos": {
-        "h": 11,
+        "h": 8,
         "w": 12,
-        "x": 0,
-        "y": 8
+        "x": 12,
+        "y": 19
       },
-      "id": 3,
+      "id": 8,
       "options": {
         "legend": {
           "calcs": [],
@@ -344,7 +507,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.2.1",
+      "pluginVersion": "12.3.1",
       "targets": [
         {
           "datasource": {
@@ -352,14 +515,15 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "rate(DominoTrans{instance=\"$node\",job=\"$job\",stat=\"count\"}[5m])",
+          "expr": "irate(DominoTrans_count{instance=\"$node\",job=\"$job\", op=\"GETNOTES_RQST\"}[$increase_interval])",
           "instant": false,
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Running Average Time",
+      "title": "GETNOTES_RQST/Min",
+      "transparent": true,
       "type": "timeseries"
     },
     {
@@ -367,7 +531,7 @@
         "type": "prometheus",
         "uid": "DS_PROMETHEUS"
       },
-      "description": "Running Average Time",
+      "description": "OPEN_NOTE/Min",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -391,11 +555,13 @@
             },
             "insertNulls": false,
             "lineInterpolation": "smooth",
+            "lineStyle": {
+              "fill": "solid"
+            },
             "lineWidth": 2,
             "pointSize": 5,
             "scaleDistribution": {
-              "log": 2,
-              "type": "log"
+              "type": "linear"
             },
             "showPoints": "auto",
             "showValues": false,
@@ -417,33 +583,18 @@
                 "value": 0
               }
             ]
-          }
+          },
+          "unit": "opm"
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "{DominoServer=\"notes_nashcom_de\", __name__=\"Server_LoadMon_TransInfo_RunningAvgTime_OPEN_NOTE\", instance=\"notes.nashcom.de:9100\", job=\"notes_nashcom_de\"}"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "blue",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "gridPos": {
-        "h": 11,
+        "h": 8,
         "w": 12,
         "x": 12,
-        "y": 8
+        "y": 27
       },
-      "id": 5,
+      "id": 7,
       "options": {
         "legend": {
           "calcs": [],
@@ -457,7 +608,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.2.1",
+      "pluginVersion": "12.3.1",
       "targets": [
         {
           "datasource": {
@@ -465,14 +616,15 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "rate(DominoTrans{instance=\"$node\",job=\"$job\",stat=\"count\"}[5m])",
+          "expr": "increase(DominoTrans_count{instance=\"$node\",job=\"$job\", op=\"OPEN_NOTE\"}[$increase_interval])",
           "instant": false,
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Running Average Time",
+      "title": "OPEN_NOTE/Min",
+      "transparent": true,
       "type": "timeseries"
     }
   ],
@@ -498,8 +650,8 @@
       },
       {
         "current": {
-          "text": "domino_nashcom",
-          "value": "domino_nashcom"
+          "text": "domino",
+          "value": "domino"
         },
         "datasource": {
           "type": "prometheus",
@@ -522,8 +674,6 @@
       },
       {
         "current": {
-          "text": "notes.nashcom.de:9100",
-          "value": "notes.nashcom.de:9100"
         },
         "datasource": {
           "type": "prometheus",
@@ -561,16 +711,28 @@
         ],
         "query": "[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+",
         "type": "custom"
+      },
+      {
+        "current": {
+          "text": "6m",
+          "value": "6m"
+        },
+        "hide": 2,
+        "label": "increase_interval",
+        "name": "increase_interval",
+        "query": "6m",
+        "skipUrlSync": true,
+        "type": "constant"
       }
     ]
   },
   "time": {
-    "from": "now-5m",
+    "from": "now-1h",
     "to": "now"
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "Domino SAI & Transactions",
+  "title": "Domino Transactions",
   "uid": "bdi02f9p93vnkd",
-  "version": 5
+  "version": 16
 }
