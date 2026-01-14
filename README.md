@@ -38,12 +38,28 @@ cd /local/github/domino-grafana
 
 ## domprom
 
-The servertask "domprom" is the core component of this project.
+The servertask **domprom** is the core component of this project.
 It needs to be deployed on each Domino server.
 By default when started the servertask writes it's .prom files into `<notesdata>/domino/stats`.
 
+When using a container image the installation is just another build option in the build menu.
 
-## node_exporter
+On Linux and Windows native the binary needs to be copied into the binary directory manually.
+
+### Example command line on Linux
+
+The following example assumes the default location of the binary directory.
+It copies the file, sets the execution permissions and creates a start-up link.
+
+```
+cp domprom /opt/hcl/domino/notes/latest/linux
+chmod 755 /opt/hcl/domino/notes/latest/linux/domprom
+cd /opt/hcl/domino/bin
+ln -s tools/startup domprom
+```
+
+
+## Prometheus Node Exporter
 
 The Prometheus Node Exporter collects OS level statistics and also the Domino .prom files written by `domprom`.
 Depending on your environment the node_exporter runs:
