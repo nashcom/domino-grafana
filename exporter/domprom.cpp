@@ -24,11 +24,9 @@
 #define TASKNAME "DOMPROM"
 #define MsgQueueName TASK_QUEUE_PREFIX TASKNAME
 
-#define DOMPROM_VERSION    "1.0.0"
-
 #define DOMPROM_VERSION_MAJOR 1
 #define DOMPROM_VERSION_MINOR 0
-#define DOMPROM_VERSION_PATCH 0
+#define DOMPROM_VERSION_PATCH 1
 
 #define DOMPROM_VERSION_BUILD (DOMPROM_VERSION_MAJOR * 10000 +  DOMPROM_VERSION_MINOR * 100 + DOMPROM_VERSION_PATCH)
 
@@ -46,15 +44,13 @@
 #define ENV_DOMPROM_INTERVAL_TRANS  "domprom_interval_trans"
 #define ENV_DOMPROM_INTERVAL_IOSTAT "domprom_interval_iostat"
 
-#define DOMPROM_DEFAULT_INTERVAL_SEC 60
-#define DOMPROM_MINIMUM_INTERVAL_SEC 10
+#define DOMPROM_DEFAULT_INTERVAL_SEC          60
+#define DOMPROM_DEFAULT_TRANS_INTERVAL_SEC   120
+#define DOMPROM_DEFAULT_IOSTAT_INTERVAL_SEC  600
 
-#define DOMPROM_DEFAULT_TRANS_INTERVAL_SEC 120
-#define DOMPROM_MINIMUM_TRANS_INTERVAL_SEC  60
-
-#define DOMPROM_DEFAULT_IOSTAT_INTERVAL_SEC 600
-#define DOMPROM_MINIMUM_IOSTAT_INTERVAL_SEC  60
-
+#define DOMPROM_MINIMUM_INTERVAL_SEC          10
+#define DOMPROM_MINIMUM_TRANS_INTERVAL_SEC    60
+#define DOMPROM_MINIMUM_IOSTAT_INTERVAL_SEC   60
 
 #define DOMPROM_DISK_COMPONENT_NOTESDATA     "Notesdata"
 #define DOMPROM_DISK_COMPONENT_TRANSLOG      "Translog"
@@ -115,6 +111,12 @@
 #include <ctime>
 #include <cstdint>
 
+
+#ifdef _WIN32
+  #define strcasecmp _stricmp
+#endif
+
+
 /* Types */
 
 struct CONTEXT_STRUCT_TYPE
@@ -151,6 +153,7 @@ char  g_szTask[]            = "domprom";
 char  g_szTaskLong[]        = "Prometheus Exporter";
 char  g_szDominoProm[]      = "domino.prom";
 char  g_szDominoTransProm[] = "domino_trans.prom";
+
 char  g_szLocalUser[MAXUSERNAME+1] = {0};
 char  g_szDataDir[MAXPATH+1]       = {0};
 char  g_szDirTranslog[MAXPATH+1]   = {0};
@@ -160,6 +163,8 @@ char  g_szDirFT[MAXPATH+1]         = {0};
 char  g_szNotesTemp[MAXPATH+1]     = {0};
 char  g_szViewRebuild[MAXPATH+1]   = {0};
 char  g_szNotesLogDir[MAXPATH+1]   = {0};
+char  g_szStatsFilename[2*MAXPATH+200] = {0};
+char  g_szTransFilename[2*MAXPATH+200] = {0};
 
 char  g_szPromTypeGauge[]     = "gauge";
 char  g_szPromTypeCounter[]   = "counter";
@@ -167,8 +172,6 @@ char  g_szPromTypeUntyped[]   = "untyped";
 char  g_szEmpty[]             = "";
 
 WORD   g_wTranslogLogType     = 0;
-WORD   g_wLogLevel            = 0;
-
 int    g_StatusDAOS           = 0;
 int    g_CatalogInSyncDAOS    = 0;
 size_t g_TranslogMinLogExtend = 0;
@@ -190,7 +193,7 @@ char g_DirSep = '/';
 
 char  g_PromDelimChar       = ' ';
 WORD  g_ShutdownPending     = 0;
-LONG  g_LogLevel            = 1;
+WORD  g_wLogLevel           = 0;
 DWORD g_dwIntervalSec       = DOMPROM_DEFAULT_INTERVAL_SEC;
 DWORD g_dwTransIntervalSec  = DOMPROM_DEFAULT_TRANS_INTERVAL_SEC;
 DWORD g_dwIOStatIntervalSec = DOMPROM_DEFAULT_IOSTAT_INTERVAL_SEC;
@@ -431,14 +434,22 @@ bool CreateDirIfNotExists (const char *pszFilename)
         if (TRUE == CreateDirectory (pszFilename, NULL))
         {
             bCreated = true;
+        }
+        else
+        {
             perror ("Cannot create directory");
         }
+
 #else
         if (0 == mkdir (pszFilename, 0770))
         {
             bCreated = true;
+        }
+        else
+        {
             perror ("Cannot create directory");
         }
+
 #endif
 
     if (bCreated)
@@ -779,14 +790,27 @@ STATUS UpdateCatalogDAOS (const char *pszValue)
 
     if (0 == CompareCaseInsensitive (pszValue, "Synchronized"))
     {
-        g_CatalogInSyncDAOS = 1;
+        g_CatalogInSyncDAOS = 0;
     }
     else
     {
-        g_CatalogInSyncDAOS = 0;
+        g_CatalogInSyncDAOS = 1;
     }
 
     return error;
+}
+
+
+void UpdateIdleStatus()
+{
+    char szStatus [MAXSPRINTF+1] = {0};
+
+    if (g_wCollectDominoTransStats)
+        snprintf (szStatus, sizeof (szStatus), "Idle (Int: %u / TxInt: %u)", g_dwIntervalSec, g_dwTransIntervalSec);
+    else
+        snprintf (szStatus, sizeof (szStatus), "Idle (Int: %u)", g_dwIntervalSec);
+
+    AddInSetStatusText (szStatus);
 }
 
 
@@ -1786,7 +1810,7 @@ void WriteExporterVerStat (FILE *fp)
     if (NULL == fp)
         return;
 
-    snprintf (szHelp, sizeof (szHelp), "Domino Prometheus Exporter build version %s", DOMPROM_VERSION);
+    snprintf (szHelp, sizeof (szHelp), "Domino Prometheus Exporter build version %s", g_szVersion);
 
     WriteStatsEntryToFile (fp, g_szDominoHealth, "Exporter_Build", szHelp, DOMPROM_VERSION_BUILD);
 }
@@ -1832,7 +1856,7 @@ STATUS LNPUBLIC GetDominoStatsTraverse (const char *pszFilename)
 
     StatTraverse (NULL, NULL, DomExportTraverse, &Stats);
 
-    if (g_LogLevel)
+    if (g_wLogLevel)
     {
         if (Stats.CountInvalid || Stats.CountUnknown)
         {
@@ -1880,12 +1904,14 @@ Done:
     return error;
 }
 
+
 BOOL GetEnvironmentVars (BOOL bFirstTime)
 {
     static WORD SeqNo  = 0;
     WORD   wTempSeqNo  = 0;
     DWORD  dwInterval  = 0;
-
+    WORD   wValue      = 0;
+    BOOL   bUpdated    = FALSE; /* Return true if config got updated and set status in this case */
     wTempSeqNo = OSGetEnvironmentSeqNo();
 
     if (FALSE == bFirstTime)
@@ -1894,22 +1920,71 @@ BOOL GetEnvironmentVars (BOOL bFirstTime)
 
     SeqNo = wTempSeqNo;
 
-    g_LogLevel      = (DWORD) OSGetEnvironmentLong (ENV_DOMPROM_LOGLEVEL);
-    g_dwIntervalSec = (DWORD) OSGetEnvironmentLong (ENV_DOMPROM_INTERVAL);
+    wValue = (WORD) OSGetEnvironmentLong (ENV_DOMPROM_LOGLEVEL);
+
+    if (g_wLogLevel != wValue)
+    {
+        g_wLogLevel = wValue;
+    }
+
+    /* Check for enabled config */
 
     if (g_wCollectDominoTransStats < MAX_CONFIG_VALUE_OVERRIDE)
-        g_wCollectDominoTransStats = (WORD) OSGetEnvironmentLong (ENV_DOMPROM_COLLECT_TRANS);
+    {
+        wValue = (WORD) OSGetEnvironmentLong (ENV_DOMPROM_COLLECT_TRANS);
+
+        if (g_wCollectDominoTransStats != wValue)
+        {
+            AddInLogMessageText ("%s: Domino transactions statistics collection: %s", 0, g_szTask, wValue ? "enabled":"disabled");
+            g_wCollectDominoTransStats = wValue;
+            bUpdated = TRUE;
+
+            if (0 == wValue)
+            {
+                RemoveFile (g_szTransFilename, 1);
+            }
+        }
+    }
 
     if (g_wCollectDominoIOStat < MAX_CONFIG_VALUE_OVERRIDE)
-        g_wCollectDominoIOStat = (WORD) OSGetEnvironmentLong (ENV_DOMPROM_COLLECT_IOSTAT);
+    {
+        wValue = (WORD) OSGetEnvironmentLong (ENV_DOMPROM_COLLECT_IOSTAT);
 
-    if (0 == g_dwIntervalSec)
-        g_dwIntervalSec = DOMPROM_DEFAULT_INTERVAL_SEC;
+        if (g_wCollectDominoIOStat != wValue)
+        {
+            AddInLogMessageText ("%s: Domino I/O statistics collection: %s", 0, g_szTask, wValue ? "enabled":"disabled");
+            g_wCollectDominoIOStat = wValue;
+            bUpdated = TRUE;
+        }
+    }
 
-    if (g_dwIntervalSec < DOMPROM_MINIMUM_INTERVAL_SEC)
-        g_dwIntervalSec = DOMPROM_MINIMUM_INTERVAL_SEC;
+    /* Check if intervals changed, check against boundaries, set and report changes */
+
+    dwInterval = (DWORD) OSGetEnvironmentLong (ENV_DOMPROM_INTERVAL);
+
+    if (0 == dwInterval)
+        dwInterval = DOMPROM_DEFAULT_INTERVAL_SEC;
+
+    if (dwInterval < DOMPROM_MINIMUM_INTERVAL_SEC)
+        dwInterval = DOMPROM_MINIMUM_INTERVAL_SEC;
+
+    if (g_dwIntervalSec != dwInterval)
+    {
+        if (false == bFirstTime)
+        {
+            AddInLogMessageText ("%s: Changed %s from %u to %u", 0, g_szTask, ENV_DOMPROM_INTERVAL, g_dwIntervalSec, dwInterval);
+        }
+
+        g_dwIntervalSec = dwInterval;
+        bUpdated = TRUE;
+    }
 
     dwInterval = (DWORD) OSGetEnvironmentLong (ENV_DOMPROM_INTERVAL_TRANS);
+
+    if (0 == dwInterval)
+    {
+        dwInterval = DOMPROM_DEFAULT_TRANS_INTERVAL_SEC;
+    }
 
     if (dwInterval < DOMPROM_MINIMUM_TRANS_INTERVAL_SEC)
         dwInterval = DOMPROM_MINIMUM_TRANS_INTERVAL_SEC;
@@ -1922,10 +1997,15 @@ BOOL GetEnvironmentVars (BOOL bFirstTime)
         }
 
         g_dwTransIntervalSec = dwInterval;
-
+        bUpdated = TRUE;
     }
 
     dwInterval = (DWORD) OSGetEnvironmentLong (ENV_DOMPROM_INTERVAL_IOSTAT);
+
+    if (0 == dwInterval)
+    {
+        dwInterval = DOMPROM_DEFAULT_TRANS_INTERVAL_SEC;
+    }
 
     if (dwInterval < DOMPROM_MINIMUM_IOSTAT_INTERVAL_SEC)
         dwInterval = DOMPROM_MINIMUM_IOSTAT_INTERVAL_SEC;
@@ -1938,9 +2018,16 @@ BOOL GetEnvironmentVars (BOOL bFirstTime)
         }
 
         g_dwIOStatIntervalSec = dwInterval;
+        bUpdated = TRUE;
     }
 
-    return TRUE;
+    if (bUpdated)
+    {
+        /* Update idle message */
+        UpdateIdleStatus();
+    }
+
+    return bUpdated;
 }
 
 
@@ -2021,29 +2108,111 @@ void GetDiskStatNamesFromNotesIni()
 
 void PrintHelp()
 {
+    AddInLogMessageText ("Domino Prometheus Exporter %s", 0, g_szVersion);
+    AddInLogMessageText ("", 0);
     AddInLogMessageText ("Syntax: %s ", 0, g_szTask);
     AddInLogMessageText ("", 0);
     AddInLogMessageText ("Parameters", 0);
     AddInLogMessageText ("---------------------", 0);
 
-    AddInLogMessageText ("-v     Verbose logging", 0);
-    AddInLogMessageText ("-t     Write transactions via 'show trans'", 0);
-    AddInLogMessageText ("-i     Collect Domino IOSTAT via 'show iostat'", 0);
+    AddInLogMessageText ("-v        Verbose logging", 0);
+    AddInLogMessageText ("-t        Write transactions via 'show trans'", 0);
+    AddInLogMessageText ("-i        Collect Domino IOSTAT via 'show iostat'", 0);
+    AddInLogMessageText ("-version  Print version", 0);
+    AddInLogMessageText ("--version Print version Linux style", 0);
 
     AddInLogMessageText ("", 0);
     AddInLogMessageText ("Environment variables", 0);
     AddInLogMessageText ("---------------------", 0);
 
     AddInLogMessageText ("domprom_loglevel          Verbose logging", 0);
+    AddInLogMessageText ("domprom_collect_trans     Enable collecting transactions via 'show trans' output", 0);
+    AddInLogMessageText ("domprom_collect_iostat    Enable collecting Domino IOSTAT data via 'show iostat'", 0);
+    AddInLogMessageText ("domprom_interval          Interval to collect stats in seconds (default: %u)", 0, DOMPROM_DEFAULT_INTERVAL_SEC);
+    AddInLogMessageText ("domprom_interval_trans    Interval to collect transactions in seconds (default: %u)", 0, DOMPROM_DEFAULT_TRANS_INTERVAL_SEC);
+    AddInLogMessageText ("domprom_interval_iostat   Interval to collect Domino IOSTAT data in seconds (default: %u)", 0, DOMPROM_DEFAULT_IOSTAT_INTERVAL_SEC);
     AddInLogMessageText ("domprom_outdir            Statistics directory for *.prom files (default: <notesdata>/domino/stats", 0);
     AddInLogMessageText ("domprom_outfile           Override Domino Stats file (default: %s)", 0, g_szDominoProm);
     AddInLogMessageText ("domprom_trans_outfile     Override Domino Transactions Stats file (default: %s)", 0, g_szDominoTransProm);
-    AddInLogMessageText ("domprom_interval          Interval to collect stats in seconds (default: %u)", 0, DOMPROM_DEFAULT_INTERVAL_SEC);
     AddInLogMessageText ("domprom_no_domino_prefix  Disable the new 'Domino_' prefix ", 0);
-    AddInLogMessageText ("domprom_collect_trans     Enable collecting transactions via 'show trans' output", 0);
-    AddInLogMessageText ("domprom_collect_iostat    Enable collecting Domino IOSTAT data via 'show iostat'", 0);
-    AddInLogMessageText ("domprom_interval_trans    Interval to collect transactions in seconds (default: %u)", 0, DOMPROM_DEFAULT_TRANS_INTERVAL_SEC);
-    AddInLogMessageText ("domprom_interval_iostat   Interval to collect Domino IOSTAT data in seconds (default: %u)", 0, DOMPROM_DEFAULT_IOSTAT_INTERVAL_SEC);
+    AddInLogMessageText ("", 0);
+}
+
+
+void PrintConfig()
+{
+    char szBuffer[MAXSPRINTF+1] = {0};
+
+    snprintf (szBuffer, sizeof (szBuffer), "Collection  Interval:  %3u seconds)", g_dwIntervalSec);
+    AddInLogMessageText ("%s", 0, szBuffer);
+
+    if (g_wCollectDominoTransStats)
+        snprintf (szBuffer, sizeof (szBuffer), "Transaction Interval:  %3u seconds)", g_dwTransIntervalSec);
+    else
+        snprintf (szBuffer, sizeof (szBuffer), "Transaction Interval:  -Disabled-)");
+    AddInLogMessageText ("%s", 0, szBuffer);
+
+    if (g_wCollectDominoIOStat)
+        snprintf (szBuffer, sizeof (szBuffer), "I/O Stats   Interval:  %3u seconds)", g_dwIOStatIntervalSec);
+    else
+        snprintf (szBuffer, sizeof (szBuffer), "I/O Stats   Interval:  -Disabled-)");
+    AddInLogMessageText ("%s", 0, szBuffer);
+
+    AddInLogMessageText ("Statistics File     :  %s", 0, g_szStatsFilename);
+
+    if (g_wCollectDominoTransStats)
+        AddInLogMessageText ("Transactions File   :  %s", 0, g_szTransFilename);
+}
+
+
+void FAR PASCAL ProcessCommand (const char *pszCmdBuffer)
+{
+    if (IsNullStr (pszCmdBuffer))
+    {
+        return;
+    }
+
+    if (0 == strcasecmp (pszCmdBuffer, "help"))
+    {
+        PrintHelp();
+    }
+
+    else if (0 == strcasecmp (pszCmdBuffer, "config"))
+    {
+        PrintConfig();
+    }
+
+    else
+    {
+        AddInLogMessageText ("%s: Invalid command: %s", 0, g_szTask, pszCmdBuffer);
+    }
+}
+
+
+BOOL PASCAL CheckAndProcessCommand (MQHANDLE hQueue)
+{
+    STATUS error   = NOERROR;
+    WORD   wMsgLen = 0;
+    char   szMsgBuffer[MQ_MAX_MSGSIZE+1] = {0};
+
+    if (NULLHANDLE == hQueue)
+        return FALSE;
+
+    if (MQIsQuitPending (hQueue))
+        return TRUE;
+
+    error = MQGet (hQueue, szMsgBuffer, MQ_MAX_MSGSIZE, 0, 0, &wMsgLen);
+
+    if (NOERROR == error)
+    {
+        if (wMsgLen < MQ_MAX_MSGSIZE)
+        {
+            szMsgBuffer[wMsgLen] = '\0';
+            ProcessCommand (szMsgBuffer);
+        }
+    }
+
+    return FALSE;
 }
 
 
@@ -2057,10 +2226,7 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
 
     DWORD   dwSeconds = 0;
 
-    char    szStatsFilename[2*MAXPATH+200] = {0};
-    char    szTransFilename[2*MAXPATH+200] = {0};
     char    szStatsDirName[MAXPATH+100]    = {0};
-    char    szStatus [MAXSPRINTF+1]        = {0};
     char    *pEnv = NULL;
     int     a = 0;
     char    ch = '\0';
@@ -2090,7 +2256,17 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
 
     for (a=1; a<argc; a++)
     {
-        if (*(argv[a]) == '-' )
+        if (0 == strcasecmp (argv[a], "--version"))
+        {
+            printf ("%s", g_szVersion);
+            return NOERROR;
+        }
+        else if (0 == strcasecmp (argv[a], "-version"))
+        {
+            AddInLogMessageText ("%s: Domino Prometheus Exporter %s", 0, g_szTask, g_szVersion);
+            return NOERROR;
+        }
+        else if (*(argv[a]) == '-' )
         {
             /* parse switches */
             ch = *(argv[a]+1);
@@ -2205,14 +2381,14 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
     GetDiskStatNamesFromNotesIni();
 
     /* First check if an outfile is defined */
-    if (FALSE == OSGetEnvironmentString (ENV_DOMPROM_OUTFILE, szStatsFilename, sizeof (szStatsFilename)-1))
+    if (FALSE == OSGetEnvironmentString (ENV_DOMPROM_OUTFILE, g_szStatsFilename, sizeof (g_szStatsFilename)-1))
     {
-        *szStatsFilename = '\0';
+        *g_szStatsFilename = '\0';
     }
 
-    if (FALSE == OSGetEnvironmentString (ENV_DOMPROM_TRANS_OUTFILE, szTransFilename, sizeof (szTransFilename)-1))
+    if (FALSE == OSGetEnvironmentString (ENV_DOMPROM_TRANS_OUTFILE, g_szTransFilename, sizeof (g_szTransFilename)-1))
     {
-        *szTransFilename = '\0';
+        *g_szTransFilename = '\0';
     }
 
     /* Else check for Domino defined stats directory */
@@ -2240,21 +2416,21 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
 
     CreateDirIfNotExists (szStatsDirName);
 
-    if (IsNullStr (szStatsFilename))
-        snprintf (szStatsFilename, sizeof (szStatsFilename), "%s%c%s", szStatsDirName, g_DirSep, g_szDominoProm);
+    if (IsNullStr (g_szStatsFilename))
+        snprintf (g_szStatsFilename, sizeof (g_szStatsFilename), "%s%c%s", szStatsDirName, g_DirSep, g_szDominoProm);
 
-    if (IsNullStr (szTransFilename))
-        snprintf (szTransFilename, sizeof (szTransFilename), "%s%c%s", szStatsDirName, g_DirSep, g_szDominoTransProm);
+    if (IsNullStr (g_szTransFilename))
+        snprintf (g_szTransFilename, sizeof (g_szTransFilename), "%s%c%s", szStatsDirName, g_DirSep, g_szDominoTransProm);
 
     GetEnvironmentVars (TRUE);
 
     AddInLogMessageText ("%s: Domino Prometheus Exporter %s", 0, g_szTask, g_szVersion);
 
-    AddInLogMessageText ("%s: Statistics Interval: %u seconds, File: %s", 0, g_szTask, g_dwIntervalSec, szStatsFilename);
+    AddInLogMessageText ("%s: Statistics Interval: %u seconds, File: %s", 0, g_szTask, g_dwIntervalSec, g_szStatsFilename);
 
     if (g_wCollectDominoTransStats)
     {
-        AddInLogMessageText ("%s: Statistic Transactions Interval: %u, File: %s", 0, g_szTask, g_dwTransIntervalSec, szTransFilename);
+        AddInLogMessageText ("%s: Statistic Transactions Interval: %u, File: %s", 0, g_szTask, g_dwTransIntervalSec, g_szTransFilename);
     }
 
     if (g_wCollectDominoIOStat)
@@ -2269,23 +2445,24 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
     while (0 == g_ShutdownPending)
     {
         AddInSetStatusText ("Collecting Stats");
-        error = GetDominoStatsTraverse (szStatsFilename);
+        error = GetDominoStatsTraverse (g_szStatsFilename);
 
         if (g_wCollectDominoTransStats)
-            ProcessTransStats (szTransFilename, g_dwTransIntervalSec);
+            ProcessTransStats (g_szTransFilename, g_dwTransIntervalSec);
 
         if (g_wCollectDominoIOStat)
             ProcessIOStat (g_dwIOStatIntervalSec);
 
-        if (g_wCollectDominoTransStats)
-            snprintf (szStatus, sizeof (szStatus), "Idle (Int: %u / TxInt: %u)", g_dwIntervalSec, g_dwTransIntervalSec);
-        else
-            snprintf (szStatus, sizeof (szStatus), "Idle (Int: %u)", g_dwIntervalSec);
-
-        AddInSetStatusText (szStatus);
+        UpdateIdleStatus();
 
         for (dwSeconds = 0; dwSeconds < g_dwIntervalSec; dwSeconds++)
         {
+            if (CheckAndProcessCommand (hQueue))
+            {
+                g_ShutdownPending = 1;
+                break;
+            }
+
             /* Don't check environment vars too often */
             if ( 0 == (dwSeconds % 10))
                 GetEnvironmentVars (FALSE);
@@ -2311,8 +2488,8 @@ Done:
 
     /* Remove stats files on shutdown to not leave any stale *.prom stats files */
 
-    RemoveFile (szTransFilename, 1);
-    RemoveFile (szStatsFilename, 1);
+    RemoveFile (g_szTransFilename, 1);
+    RemoveFile (g_szStatsFilename, 1);
 
     if (hQueue)
     {
