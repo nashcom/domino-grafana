@@ -45,7 +45,7 @@
 #define ENV_DOMPROM_INTERVAL_IOSTAT "domprom_interval_iostat"
 
 #define DOMPROM_DEFAULT_INTERVAL_SEC          60
-#define DOMPROM_DEFAULT_TRANS_INTERVAL_SEC   120
+#define DOMPROM_DEFAULT_TRANS_INTERVAL_SEC   180
 #define DOMPROM_DEFAULT_IOSTAT_INTERVAL_SEC  600
 
 #define DOMPROM_MINIMUM_INTERVAL_SEC          10
@@ -806,9 +806,10 @@ void UpdateIdleStatus()
     char szStatus [MAXSPRINTF+1] = {0};
 
     if (g_wCollectDominoTransStats)
-        snprintf (szStatus, sizeof (szStatus), "Idle (Int: %u / TxInt: %u)", g_dwIntervalSec, g_dwTransIntervalSec);
+
+        snprintf (szStatus, sizeof (szStatus), "Idle (collect int: %u sec / trans int: %u sec)", g_dwIntervalSec, g_dwTransIntervalSec);
     else
-        snprintf (szStatus, sizeof (szStatus), "Idle (Int: %u)", g_dwIntervalSec);
+        snprintf (szStatus, sizeof (szStatus), "Idle (collect interval: %u sec)", g_dwIntervalSec);
 
     AddInSetStatusText (szStatus);
 }

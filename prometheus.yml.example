@@ -7,9 +7,11 @@ scrape_configs:
       - targets:
           - notes.example.com:9100
         labels:
-          DominoServer: notes.example.com
+          pod: notes.example.com
+          namespace: domino
 
       - targets:
           - domino.example.com:9100
         labels:
-          DominoServer: domino.example.com
+          pod: domino.example.com
+          namespace: domino

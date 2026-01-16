@@ -1,5 +1,5 @@
 ###########################################################################
-# systemd Service - Promtail Aagent                                       #
+# systemd Service - Promtail Agent                                        #
 # Version 1.0.0 04.04.2024                                                #
 #                                                                         #
 # (C) Copyright Daniel Nashed/NashCom 2024                                #
@@ -20,7 +20,7 @@
 
 [Unit]
 
-Description=Promtail Aagent
+Description=Promtail Agent
 After=syslog.target network.target
 
 [Service]
