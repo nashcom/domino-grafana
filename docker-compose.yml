@@ -1,3 +1,11 @@
+x-no-proxy: &no-proxy
+  HTTP_PROXY: ""
+  HTTPS_PROXY: ""
+  NO_PROXY: ""
+  http_proxy: ""
+  https_proxy: ""
+  no_proxy: ""
+
 services:
 
   grafana:
@@ -8,9 +16,13 @@ services:
     restart: always
     stop_grace_period: 15s
 
+    environment:
+      NO_PROXY: localhost,127.0.0.1,grafana,prometheus
+      no_proxy: localhost,127.0.0.1,grafana,prometheus
+
     volumes:
-      - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:z
+      - grafana-data:/var/lib/grafana
 
     networks:
       grafana_net:
@@ -22,6 +34,8 @@ services:
     hostname: prometheus
     restart: always
     stop_grace_period: 15s
+
+    environment: *no-proxy
 
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:z
@@ -35,6 +49,8 @@ services:
     container_name: loki
     profiles:
       - loki
+
+    environment: *no-proxy
 
     volumes:
       - ./loki-config.yml:/loki-config.yml:z
