@@ -1,7 +1,7 @@
 #/*
 ###########################################################################
 # Domino Prometheus Exporter                                              #
-# Version 1.0.1 10.01.2026                                                #
+# Version 1.0.1 20.01.2026                                                #
 # (C) Copyright Daniel Nashed/Nash!Com 2024-2026                          #
 #                                                                         #
 # Licensed under the Apache License, Version 2.0 (the "License");         #
@@ -26,7 +26,7 @@
 
 #define DOMPROM_VERSION_MAJOR 1
 #define DOMPROM_VERSION_MINOR 0
-#define DOMPROM_VERSION_PATCH 1
+#define DOMPROM_VERSION_PATCH 2
 
 #define DOMPROM_VERSION_BUILD (DOMPROM_VERSION_MAJOR * 10000 +  DOMPROM_VERSION_MINOR * 100 + DOMPROM_VERSION_PATCH)
 
@@ -110,6 +110,7 @@
 #include <algorithm>
 #include <ctime>
 #include <cstdint>
+#include <unordered_map>
 
 
 #ifdef _WIN32
@@ -207,6 +208,62 @@ std::list<std::string> g_ListDiskFreeStats;
 
 std::list<std::string> g_ListTransCountStats;
 std::list<std::string> g_ListTransTotalMsStats;
+
+/* Currently the value is unused. But on purpose this is a map which can later hold values as well */
+
+static std::unordered_map<std::string, double> g_DominoStat;
+
+static size_t g_DominoStatCount = 0;
+static size_t g_DominoStatMax   = 0;
+
+#define DOMSTAT_NEW                 0
+#define DOMSTAT_DUPLICATE_SAME      1
+#define DOMSTAT_DUPLICATE_DIFFERENT 2
+
+
+void BeginDominoStatCollection()
+{
+    g_DominoStat.clear();
+
+    if (g_DominoStatMax > 0)
+    {
+        g_DominoStat.reserve (g_DominoStatMax);
+    }
+
+    g_DominoStatCount = 0;
+}
+
+
+int RegisterDominoStat (const char *pszName, double value)
+{
+    if (pszName == nullptr)
+    {
+        return DOMSTAT_DUPLICATE_SAME;
+    }
+
+    auto result = g_DominoStat.emplace(std::string (pszName), value);
+
+    if (result.second)
+    {
+        ++g_DominoStatCount;
+
+        if (g_DominoStatCount > g_DominoStatMax)
+        {
+            g_DominoStatMax = g_DominoStatCount;
+        }
+
+        return DOMSTAT_NEW;
+    }
+
+    if (result.first->second == value)
+    {
+        return DOMSTAT_DUPLICATE_SAME;
+    }
+
+    result.first->second = value;
+    return DOMSTAT_DUPLICATE_DIFFERENT;
+}
+
 
 class PrefixFilter
 {
@@ -1002,6 +1059,16 @@ STATUS LNCALLBACK DomExportTraverse (void *pContext, char *pszFacility, char *ps
         return NOERROR;
     }
 
+    /* Compare if the statistic case insensitive was written before and log case sensitive */
+    if (RegisterDominoStat (szMetricLower, 0))
+    {
+        if (g_wLogLevel)
+        {
+            AddInLogMessageText ("%s: Duplicate Domino statistic found for: %s", 0, g_szTask, szMetric);
+        }
+        return NOERROR;
+    }
+
     /* Use the combined and converted metric for statistic name conversion */
     ReplaceChars (szMetric);
 
@@ -1608,7 +1675,7 @@ bool AddTransactionStats (const char *pszMetricPrefix, const char *pszOp, int Co
         pszOp,
         TotalMs);
 
-    AddUnique(g_ListTransTotalMsStats, szBuffer);
+    AddUnique (g_ListTransTotalMsStats, szBuffer);
 
     return true;
 }
@@ -1854,6 +1921,9 @@ STATUS LNPUBLIC GetDominoStatsTraverse (const char *pszFilename)
         StatUpdateText (g_szDominoHealth, "Intl.DecimalString", Stats.Intl.DecimalString);
         StatUpdateText (g_szDominoHealth, "Intl.ThousandString", Stats.Intl.ThousandString);
     }
+
+    /* Reset Domino statistics buffer for making sure we don't get a stat more than once */
+    BeginDominoStatCollection();
 
     StatTraverse (NULL, NULL, DomExportTraverse, &Stats);
 
