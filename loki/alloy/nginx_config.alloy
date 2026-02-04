@@ -1,0 +1,64 @@
+logging {
+  level = env("ALLOY_LOG_LEVEL")
+}
+
+loki.write "loki" {
+  endpoint {
+    url = env("ALLOY_PUSH_TARGET")
+
+    bearer_token = env("ALLOY_LOKI_TOKEN")
+
+    tls_config {
+      ca_file = env("ALLOY_LOKI_CA_FILE")
+    }
+  }
+}
+
+local.file_match "logfiles" {
+  path_targets = [
+    {
+      __path__  = env("ALLOY_LOKI_LOGFILE"),
+      job       = env("ALLOY_LOKI_JOB"),
+      namespace = env("ALLOY_LOKI_NAMESPACE"),
+      pod       = env("ALLOY_LOKI_POD"),
+    },
+  ]
+}
+
+loki.source.file "nginx" {
+  targets = local.file_match.logfiles.targets
+
+  forward_to = [
+    loki.process.nginx.receiver,
+  ]
+}
+
+loki.process "nginx" {
+
+  stage.json {
+    expressions = {
+      time         = "time",
+      status       = "status",
+      method       = "method",
+      uri          = "uri",
+      request_time = "request_time",
+    }
+  }
+
+  stage.timestamp {
+    source = "time"
+    format = "RFC3339"
+  }
+
+  stage.labels {
+    values = {
+      method = "method",
+      status = "status",
+    }
+  }
+
+  forward_to = [
+    loki.write.loki.receiver,
+  ]
+}
+

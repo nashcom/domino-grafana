@@ -85,6 +85,27 @@ services:
     networks:
       grafana_net:
 
+  nginx-loki:
+
+    image: nginx
+    container_name: loki-nginx
+    hostname: loki-nginx
+    restart: always
+    stop_grace_period: 15s
+    depends_on:
+      - loki
+
+    ports:
+      - 3101:443
+
+    volumes:
+      - ./nginx_loki.conf:/etc/nginx/nginx.conf:z
+      - ./certs:/certs:z
+
+    networks:
+      grafana_net:
+
+
 volumes:
 
   grafana-data:
