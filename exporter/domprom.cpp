@@ -1,7 +1,7 @@
 #/*
 ###########################################################################
 # Domino Prometheus Exporter                                              #
-# Version 1.0.1 20.01.2026                                                #
+# Version 1.0.3 06.02.2026                                                #
 # (C) Copyright Daniel Nashed/Nash!Com 2024-2026                          #
 #                                                                         #
 # Licensed under the Apache License, Version 2.0 (the "License");         #
@@ -26,23 +26,25 @@
 
 #define DOMPROM_VERSION_MAJOR 1
 #define DOMPROM_VERSION_MINOR 0
-#define DOMPROM_VERSION_PATCH 2
+#define DOMPROM_VERSION_PATCH 3
 
 #define DOMPROM_VERSION_BUILD (DOMPROM_VERSION_MAJOR * 10000 +  DOMPROM_VERSION_MINOR * 100 + DOMPROM_VERSION_PATCH)
 
 #define DOMPROM_COPYRIGHT  "Copyright Daniel Nashed/Nash!Com 2024-2026"
 #define DOMPROM_GITHUB_URL "https://github.com/nashcom/domino-grafana"
 
-#define ENV_DOMPROM_LOGLEVEL        "domprom_loglevel"
-#define ENV_DOMPROM_STATS_DIR       "domprom_outdir"
-#define ENV_DOMPROM_OUTFILE         "domprom_outfile"
-#define ENV_DOMPROM_TRANS_OUTFILE   "domprom_trans_outfile"
-#define ENV_DOMPROM_INTERVAL        "domprom_interval"
-#define ENV_DOMPROM_NO_PREFIX       "domprom_no_domino_prefix"
-#define ENV_DOMPROM_COLLECT_TRANS   "domprom_collect_trans"
-#define ENV_DOMPROM_COLLECT_IOSTAT  "domprom_collect_iostat"
-#define ENV_DOMPROM_INTERVAL_TRANS  "domprom_interval_trans"
-#define ENV_DOMPROM_INTERVAL_IOSTAT "domprom_interval_iostat"
+#define ENV_DOMPROM_LOGLEVEL          "domprom_loglevel"
+#define ENV_DOMPROM_STATS_DIR         "domprom_outdir"
+#define ENV_DOMPROM_OUTFILE           "domprom_outfile"
+#define ENV_DOMPROM_TRANS_OUTFILE     "domprom_trans_outfile"
+#define ENV_DOMPROM_INTERVAL          "domprom_interval"
+#define ENV_DOMPROM_NO_PREFIX         "domprom_no_domino_prefix"
+#define ENV_DOMPROM_COLLECT_TRANS     "domprom_collect_trans"
+#define ENV_DOMPROM_COLLECT_IOSTAT    "domprom_collect_iostat"
+#define ENV_DOMPROM_INTERVAL_TRANS    "domprom_interval_trans"
+#define ENV_DOMPROM_INTERVAL_IOSTAT   "domprom_interval_iostat"
+#define ENV_DOMPROM_MAINTENANCE_START "domprom_maintenance_start"
+#define ENV_DOMPROM_MAINTENANCE_END   "domprom_maintenance_end"
 
 #define DOMPROM_DEFAULT_INTERVAL_SEC          60
 #define DOMPROM_DEFAULT_TRANS_INTERVAL_SEC   180
@@ -61,6 +63,10 @@
 #define DOMPROM_DISK_COMPONENT_VIEW_REBUILD  "ViewRebuild"
 #define DOMPROM_DISK_COMPONENT_NOTES_LOG_DIR "NotesLogDir"
 
+#define MAX_STAT_DESC  2048
+#define MAX_STAT_NAME   120
+
+#define sizeofstring(x) (sizeof (x) - 1)
 
 /* Includes */
 
@@ -86,20 +92,23 @@
 
 #include <global.h>
 #include <addin.h>
-#include <stdnames.h>
+#include <idtable.h>
 #include <intl.h>
+#include <kfm.h>
+#include <misc.h>
 #include <miscerr.h>
+#include <mq.h>
 #include <nsfdb.h>
+#include <nsfnote.h>
+#include <nsfsearc.h>
 #include <osenv.h>
+#include <oserr.h>
 #include <osfile.h>
 #include <osmem.h>
 #include <osmisc.h>
-#include <stats.h>
-#include <kfm.h>
-#include <oserr.h>
 #include <ostime.h>
-#include <misc.h>
-#include <mq.h>
+#include <stats.h>
+#include <stdnames.h>
 
 #include <cstdio>
 #include <string>
@@ -171,8 +180,10 @@ char  g_szPromTypeGauge[]     = "gauge";
 char  g_szPromTypeCounter[]   = "counter";
 char  g_szPromTypeUntyped[]   = "untyped";
 char  g_szEmpty[]             = "";
+char  g_szEvents4[]           = "events4.nsf";
 
 WORD   g_wTranslogLogType     = 0;
+WORD   g_wServerRestricted    = 0;
 int    g_StatusDAOS           = 0;
 int    g_CatalogInSyncDAOS    = 0;
 size_t g_TranslogMinLogExtend = 0;
@@ -183,6 +194,12 @@ WORD   g_wCollectDominoIOStat      = 0;
 
 TIMEDATE g_tNextTransStatsUpdate = {0};
 TIMEDATE g_tNextIOStatUpdate     = {0};
+TIMEDATE g_tMaintenanceStart     = {0};
+TIMEDATE g_tMaintenanceEnd       = {0};
+
+WORD     g_wMaintenanceEnabled   = 0;
+BOOL     g_bMaintenanceStartSet  = FALSE;
+BOOL     g_bMaintenanceEndSet    = FALSE;
 
 #define MAX_CONFIG_VALUE_OVERRIDE 99
 
@@ -212,6 +229,8 @@ std::list<std::string> g_ListTransTotalMsStats;
 /* Currently the value is unused. But on purpose this is a map which can later hold values as well */
 
 static std::unordered_map<std::string, double> g_DominoStat;
+static std::unordered_map<std::string, std::string> g_DominoStatDescription;
+
 
 static size_t g_DominoStatCount = 0;
 static size_t g_DominoStatMax   = 0;
@@ -241,7 +260,7 @@ int RegisterDominoStat (const char *pszName, double value)
         return DOMSTAT_DUPLICATE_SAME;
     }
 
-    auto result = g_DominoStat.emplace(std::string (pszName), value);
+    auto result = g_DominoStat.emplace (std::string (pszName), value);
 
     if (result.second)
     {
@@ -952,6 +971,7 @@ bool WriteStatsEntryToFile (FILE *fp, const char *pszPrefix, const char *pszStat
     return true;
 }
 
+
 bool WriteStatsEntryToFile (FILE *fp, const char *pszPrefix, const char *pszStatName, const char *pszDescription, const char *pszValueString)
 {
     if (NULL == fp)
@@ -975,14 +995,12 @@ bool WriteStatsEntryToFile (FILE *fp, const char *pszPrefix, const char *pszStat
 }
 
 
-bool WriteTimedateStat (CONTEXT_STRUCT_TYPE *pStats, const char *pszStatName, const char *pszDescription, void *pValue)
+bool WriteTimedateStat (FILE *fp, const char *pszStatName, const char *pszDescription, void *pValue)
 {
     uint64_t EpochTime = 0;
 
-    if (NULL == pStats)
-        return false;
 
-    if (NULL == pStats->fp)
+    if (NULL == fp)
         return false;
 
     if (NULL == pszStatName)
@@ -996,10 +1014,292 @@ bool WriteTimedateStat (CONTEXT_STRUCT_TYPE *pStats, const char *pszStatName, co
     if (0 == EpochTime)
         return false;
 
-    WriteStatsEntryToFile (pStats->fp, g_szDominoHealth, pszStatName, pszDescription, EpochTime);
+    WriteStatsEntryToFile (fp, g_szDominoHealth, pszStatName, pszDescription, EpochTime);
 
     return true;
 }
+
+
+STATUS AddIDUnique (void far *phNoteIDTable, SEARCH_MATCH far *pSearchInfo, ITEM_TABLE far *pSummaryInfo)
+{
+    DHANDLE       hNoteIDTable = NULLHANDLE;
+    STATUS        error        = NOERROR;
+    BOOL          bFlagOK      = FALSE;
+    SEARCH_MATCH  SearchMatch  = {0};
+
+    if (NULL == pSearchInfo)
+        return ERR_MISC_INVALID_ARGS;
+
+    memcpy((char*)(&SearchMatch), (char *)pSearchInfo, sizeof (SEARCH_MATCH));
+
+    if (!(SearchMatch.SERetFlags & SE_FMATCH)) return(NOERROR);
+
+    if (phNoteIDTable)
+    {
+        hNoteIDTable = *((DHANDLE far *)phNoteIDTable);
+        if (hNoteIDTable)
+        {
+            error = IDInsert(hNoteIDTable, SearchMatch.ID.NoteID, &bFlagOK);
+        }
+    }
+
+    return ERR(error);
+}
+
+
+DWORD GetDocsByFormula (DBHANDLE hDb, char *pszFormulaText, char *pszLookupDisplay, DHANDLE *retphNoteIDTable)
+{
+    STATUS error = NOERROR;
+    WORD   wdc         = 0;
+    WORD   wFormulaLen = 0;
+    DWORD  dwEntries   = 0;
+
+    FORMULAHANDLE hFormula = NULLHANDLE;
+
+    if (NULLHANDLE == *retphNoteIDTable)
+    {
+        error = IDCreateTable(sizeof (NOTEID), retphNoteIDTable);
+
+        if (error)
+        {
+            goto Done;
+        }
+    }
+
+    error = NSFFormulaCompile( NULL,
+                               0,
+                               pszFormulaText,
+                               (WORD) strlen (pszFormulaText),
+                               &hFormula,
+                               &wFormulaLen,
+                               &wdc,
+                               &wdc,
+                               &wdc,
+                               &wdc,
+                               &wdc);
+
+    if (error)
+    {
+        AddInLogMessageText ("%s: Error compiling search formula", error, g_szTask);
+        hFormula = NULLHANDLE;
+        goto Done;
+    }
+
+    error = NSFSearch(hDb,                /* database handle */
+                      hFormula,           /* selection formula */
+                      NULL,               /* title of view in selection formula */
+                      0,                  /* search flags */
+                      NOTE_CLASS_DOCUMENT,/* note class to find */
+                      NULL,               /* starting date(unused) */
+                      AddIDUnique,        /* call for each note found */
+                      retphNoteIDTable,   /* argument to AddIDUnique */
+                      NULL);              /* returned ending date(unused) */
+
+    if (error)
+    {
+        goto Done;
+    }
+
+    dwEntries = IDEntries (*retphNoteIDTable);
+
+Done:
+
+    if (hFormula)
+    {
+        OSMemFree(hFormula);
+        hFormula = NULLHANDLE;
+    }
+
+    return dwEntries;
+}
+
+
+
+void SanitizeHelpString(char *pszText)
+{
+    char *pchRead  = NULL;
+    char *pchWrite = NULL;
+    unsigned char ch = 0;
+    bool fLastWasSpace = true;   // treat start as "space" to trim leading spaces
+
+    if (!pszText)
+        return;
+
+    pchRead  = pszText;
+    pchWrite = pszText;
+
+    for (; *pchRead; ++pchRead)
+    {
+        ch = (unsigned char)*pchRead;
+
+        // Skip all control characters
+        if (ch < 32)
+            continue;
+
+        if (ch == ' ')
+        {
+            if (fLastWasSpace)
+                continue;  // collapse multiple / leading spaces
+
+            fLastWasSpace = true;
+            *pchWrite++ = ' ';
+            continue;
+        }
+
+        *pchWrite++ = *pchRead;
+        fLastWasSpace = false;
+    }
+
+    // Trim trailing space
+    if (pchWrite > pszText && pchWrite[-1] == ' ')
+        --pchWrite;
+
+    *pchWrite = '\0';
+}
+
+
+STATUS AddStatDescriptionToTable (const char *pszStatName, char *pszDescription)
+{
+    STATUS error = NOERROR;
+    char szStatsNameLower[MAX_STAT_NAME+1] = {0};
+
+    if (IsNullStr (pszStatName))
+        return ERR_MISC_INVALID_ARGS;
+
+    if (IsNullStr (pszDescription))
+        return ERR_MISC_INVALID_ARGS;
+
+    OSTranslate32 (OS_TRANSLATE_UPPER_TO_LOWER, pszStatName, MAXDWORD, szStatsNameLower, sizeof (szStatsNameLower));
+
+    SanitizeHelpString (pszDescription);
+
+    g_DominoStatDescription.emplace (std::string (szStatsNameLower), std::string (pszDescription));
+
+    return error;
+}
+
+
+const char *GetStatDescriptionFromTable (const char *pszStatNameLower)
+{
+    const char* pszDesc = NULL;
+
+    if (IsNullStr (pszStatNameLower))
+        return NULL;
+
+    auto it = g_DominoStatDescription.find (pszStatNameLower);
+    if (it != g_DominoStatDescription.end())
+    {
+        pszDesc = it->second.c_str();
+    }
+
+    return pszDesc;
+}
+
+
+STATUS ProcessStatDocument (DBHANDLE hDb, NOTEID NoteID)
+{
+    STATUS error = NOERROR;
+    NOTEHANDLE hNote = NULLHANDLE;
+
+    char szStatName[MAX_STAT_NAME+1]    = {0};
+    char szUnits[40]                    = {0};
+    char szBuffer[MAX_STAT_DESC*2]      = {0};
+    char szDescription[MAX_STAT_DESC+1] = {0};
+
+    if (NULLHANDLE == hDb)
+        return ERR_MISC_INVALID_ARGS;
+
+    if (0 == NoteID)
+        return ERR_MISC_INVALID_ARGS;
+
+    error = NSFNoteOpen (hDb, NoteID, 0, &hNote);
+
+    if (error)
+    {
+        AddInLogMessageText ("%s: Cannot open Statistics note 0x%x in %s", error, g_szTask, NoteID, g_szEvents4);
+        goto Done;
+    }
+
+    NSFItemGetText (hNote, "StatName",    szStatName,    sizeofstring (szStatName));
+    NSFItemGetText (hNote, "Description", szDescription, sizeofstring (szDescription));
+    NSFItemGetText (hNote, "Units",       szUnits,       sizeofstring (szUnits));
+
+    if (*szUnits)
+    {
+        snprintf (szBuffer, sizeof (szBuffer), "%s [%s]", szDescription, szUnits);
+        AddStatDescriptionToTable (szStatName, szBuffer);
+    }
+    else
+    {
+        AddStatDescriptionToTable (szStatName, szDescription);
+    }
+
+Done:
+
+    if (hNote)
+    {
+        NSFNoteClose (hNote);
+        hNote = NULLHANDLE;
+    }
+
+    return error;
+
+}
+
+
+STATUS ReadStatisticsInfoFromEvents4()
+{
+    STATUS   error        = NOERROR;
+    DBHANDLE hDb          = NULLHANDLE;
+    DHANDLE  hNoteIDTable = NULLHANDLE;
+
+    NOTEID   NoteID    = 0;
+    DWORD    dwEntries = 0;
+    BOOL     bFound    = FALSE;
+
+    error = NSFDbOpen (g_szEvents4, &hDb);
+
+    if (error)
+    {
+        AddInLogMessageText ("%s: Cannot open %s", error, g_szTask, g_szEvents4);
+        goto Done;
+    }
+
+    dwEntries = GetDocsByFormula (hDb, "+(Form = {Statistic})", "Search statistics descriptions in events4.nsf", &hNoteIDTable);
+
+    if (g_wLogLevel)
+        AddInLogMessageText ("%s: Statistics descriptions found in %s: %u", 0, g_szTask, g_szEvents4, dwEntries);
+
+    if (0 == dwEntries)
+    {
+        goto Done;
+    }
+
+    bFound = IDScan (hNoteIDTable, TRUE, &NoteID);
+
+    while (bFound)
+    {
+        error = ProcessStatDocument (hDb, NoteID);
+        bFound = IDScan (hNoteIDTable, FALSE, &NoteID);
+    }
+
+Done:
+
+    if (hNoteIDTable)
+    {
+        IDDestroyTable(hNoteIDTable);
+        hNoteIDTable = NULLHANDLE;
+    }
+
+    if (hDb)
+    {
+        NSFDbClose (hDb);
+        hDb = NULLHANDLE;
+    }
+
+    return error;
+}
+
 
 
 STATUS LNCALLBACK DomExportTraverse (void *pContext, char *pszFacility, char *pszStatName, WORD wValueType, void *pValue)
@@ -1008,10 +1308,12 @@ STATUS LNCALLBACK DomExportTraverse (void *pContext, char *pszFacility, char *ps
     WORD   wLen           = 0;
     NFMT   NumberFormat   = {0};
 
-    char   szDescription[1024]  = {0};
+    char   szDescription[MAX_STAT_DESC+1] = {0};
     char   szMetric[1024]      = {0};
     char   szMetricLower[1024] = {0};
     char   szValue[1024]       = {0};
+
+    const char *pszDescription = NULL;
 
     CONTEXT_STRUCT_TYPE *pStats = (CONTEXT_STRUCT_TYPE*)pContext;
 
@@ -1072,7 +1374,12 @@ STATUS LNCALLBACK DomExportTraverse (void *pContext, char *pszFacility, char *ps
     /* Use the combined and converted metric for statistic name conversion */
     ReplaceChars (szMetric);
 
-    snprintf (szDescription, sizeof (szDescription), "Domino Statistic %s.%s", pszFacility, pszStatName);
+    pszDescription = GetStatDescriptionFromTable (szMetricLower);
+
+    if (pszDescription)
+        snprintf (szDescription, sizeof (szDescription), "%s", pszDescription);
+    else
+        snprintf (szDescription, sizeof (szDescription), "Domino Stat - %s.%s", pszFacility, pszStatName);
 
     switch (wValueType)
     {
@@ -1145,17 +1452,17 @@ STATUS LNCALLBACK DomExportTraverse (void *pContext, char *pszFacility, char *ps
 
             if (0 == CompareCaseInsensitive (szMetric, "DominoBackup_LastBackup_DB_Time"))
             {
-                WriteTimedateStat (pStats, "LastBackup_DB_EpochTime", szDescription, pValue);
+                WriteTimedateStat (pStats->fp, "LastBackup_DB_Time", szDescription, pValue);
             }
 
             else if (0 == CompareCaseInsensitive (szMetric, "DominoBackup_LastBackup_TL_Time"))
             {
-                WriteTimedateStat (pStats, "LastBackup_TL_EpochTime", szDescription, pValue);
+                WriteTimedateStat (pStats->fp, "LastBackup_TL_Time", szDescription, pValue);
             }
 
             else if (0 == CompareCaseInsensitive (szMetric, "Server_Time_Start"))
             {
-                WriteTimedateStat (pStats, "Server_Time_Start", szDescription, pValue);
+                WriteTimedateStat (pStats->fp, "Server_Time_Start", szDescription, pValue);
             }
 
             if (pStats->bExportTime)
@@ -1843,7 +2150,7 @@ STATUS ProcessTransStats (const char *pszFilename, DWORD dwIntervalSeconds)
         PrintAndClearTransStats (fp);
     }
 
-    WriteStatsEntryToFile (fp, g_szDominoTrans, "StatUpdateEpochTime", "Domino Transactions last update epoch time", EpochSec);
+    WriteStatsEntryToFile (fp, g_szDominoTrans, "stat_transactions_update_timestamp", "Domino Transactions last update epoch time", EpochSec);
 
 Done:
 
@@ -1871,24 +2178,65 @@ Done:
 }
 
 
-void WriteExporterVerStat (FILE *fp)
+WORD IsInMaintenanceMode()
 {
-    char szHelp[256] = {0};
+    TIMEDATE tNow = {0};
+
+    if (g_wMaintenanceEnabled)
+        return 1;
+
+    if (false == g_bMaintenanceStartSet)
+        return 0;
+
+    OSCurrentTIMEDATE (&tNow);
+
+    if (TimeDateCompare (&tNow, &g_tMaintenanceStart) < 0)
+        return 0;
+
+    if (false == g_bMaintenanceEndSet)
+        return 3;
+
+    if (TimeDateCompare (&tNow, &g_tMaintenanceEnd) > 0)
+        return 0;
+
+    return 3;
+}
+
+
+void WriteExporterCommonStats (FILE *fp)
+{
+    char szTmp[MAXSPRINTF+1] = {0};
+    uint64_t EpochSec = (uint64_t) time (NULL);
 
     if (NULL == fp)
         return;
 
-    snprintf (szHelp, sizeof (szHelp), "Domino Prometheus Exporter build version %s", g_szVersion);
+    snprintf (szTmp, sizeof (szTmp), "Domino Prometheus Exporter build version %s", g_szVersion);
+    WriteStatsEntryToFile (fp, g_szDominoHealth, "Exporter_Build", szTmp, DOMPROM_VERSION_BUILD);
 
-    WriteStatsEntryToFile (fp, g_szDominoHealth, "Exporter_Build", szHelp, DOMPROM_VERSION_BUILD);
+    WriteStatsEntryToFile (fp, g_szDominoHealth, "stat_update_timestamp", "Domino Statistic last update epoch time", EpochSec);
+
+    if (g_bMaintenanceStartSet)
+    {
+        AddInFormatErrorText(szTmp, "Start of maintenance window in epoch time (%z)", &g_tMaintenanceStart);
+        WriteTimedateStat (fp, "maintenance_start_timestamp", szTmp, &g_tMaintenanceStart);
+    }
+
+    if (g_bMaintenanceEndSet)
+    {
+        AddInFormatErrorText(szTmp, "End of maintenance window in epoch time (%z)", &g_tMaintenanceEnd);
+        WriteTimedateStat (fp, "maintenance_end_timestamp", szTmp, &g_tMaintenanceEnd);
+    }
+
+    WriteStatsEntryToFile (fp, g_szDominoHealth, "maintenance_status", "Domino maintenance status", IsInMaintenanceMode());
+    WriteStatsEntryToFile (fp, g_szDominoHealth, "server_restricted_status", "Domino server restricted status", g_wServerRestricted);
 }
 
 
-STATUS LNPUBLIC GetDominoStatsTraverse (const char *pszFilename)
+STATUS ProcessDominoStatistics (const char *pszFilename, bool bWriteShutdownStats = false)
 {
     STATUS   error = NOERROR;
     char     szTempFilename[MAXPATH+1] = {0};
-    uint64_t EpochSec = (uint64_t) time (NULL);
 
     CONTEXT_STRUCT_TYPE Stats = {0};
 
@@ -1916,10 +2264,20 @@ STATUS LNPUBLIC GetDominoStatsTraverse (const char *pszFilename)
     snprintf (Stats.Intl.DecimalString,  sizeof (Stats.Intl.DecimalString), ".");
     snprintf (Stats.Intl.ThousandString, sizeof (Stats.Intl.ThousandString), ",");
 
+    WriteExporterCommonStats (Stats.fp);
+
     if (g_wWriteDominoHealthStats)
     {
         StatUpdateText (g_szDominoHealth, "Intl.DecimalString", Stats.Intl.DecimalString);
         StatUpdateText (g_szDominoHealth, "Intl.ThousandString", Stats.Intl.ThousandString);
+    }
+
+    if (bWriteShutdownStats)
+    {
+        TIMEDATE tNow  = {0};
+        OSCurrentTIMEDATE (&tNow);
+        WriteTimedateStat (Stats.fp, "stat_shutdown_timestamp", "Domino statistic shutdown epoch time", &tNow);
+        goto Done;
     }
 
     /* Reset Domino statistics buffer for making sure we don't get a stat more than once */
@@ -1958,9 +2316,6 @@ STATUS LNPUBLIC GetDominoStatsTraverse (const char *pszFilename)
     ProcessDaosStats     (Stats.fp);
     ProcessTranslogStats (Stats.fp);
     ProcessDiskStats     (Stats.fp);
-    WriteExporterVerStat (Stats.fp);
-
-    WriteStatsEntryToFile (Stats.fp, g_szDominoHealth, "StatUpdateEpochTime", "Domino last update epoch time", EpochSec);
 
 Done:
 
@@ -2098,6 +2453,10 @@ BOOL GetEnvironmentVars (BOOL bFirstTime)
         UpdateIdleStatus();
     }
 
+    g_bMaintenanceStartSet = OSGetEnvironmentTIMEDATE (ENV_DOMPROM_MAINTENANCE_START, &g_tMaintenanceStart);
+    g_bMaintenanceEndSet   = OSGetEnvironmentTIMEDATE (ENV_DOMPROM_MAINTENANCE_END,   &g_tMaintenanceEnd);
+    g_wServerRestricted    = (WORD) OSGetEnvironmentLong ("SERVER_RESTRICTED");
+
     return bUpdated;
 }
 
@@ -2136,6 +2495,25 @@ bool IsAbsolutePath (const char *pszTarget)
       return true;
 
   return false;
+}
+
+
+int ConvertToHumanReadableTime (double seconds, size_t MaxStrLen, char *retpszTime)
+{
+    if (seconds >= 86400.0)
+    {
+        return snprintf (retpszTime, MaxStrLen, "%.2f days", seconds / 86400.0);
+    }
+    else if (seconds >= 3600.0)
+    {
+        return snprintf (retpszTime, MaxStrLen, "%.2f hours", seconds / 3600.0);
+    }
+    else if (seconds >= 60.0)
+    {
+        return snprintf(retpszTime, MaxStrLen, "%.2f minutes", seconds / 60.0);
+    }
+
+    return snprintf (retpszTime, MaxStrLen, "%.2f seconds", seconds);
 }
 
 
@@ -2213,31 +2591,278 @@ void PrintHelp()
 void PrintConfig()
 {
     char szBuffer[MAXSPRINTF+1] = {0};
+    char szTime[40]      = {0};
+    TIMEDATE tNow        = {0};
+    LONG lSecondsStart   = 0;
+    LONG lSecondsEnd     = 0;
+    LONG lSeconds        = 0;
+    BOOL bIsMaintanance  = IsInMaintenanceMode();
 
-    snprintf (szBuffer, sizeof (szBuffer), "Collection  Interval:  %3u seconds)", g_dwIntervalSec);
+    OSCurrentTIMEDATE (&tNow);
+    AddInLogMessageText ("", 0, szBuffer);
+
+    snprintf (szBuffer, sizeof (szBuffer), "Collection  Interval :  %3u seconds)", g_dwIntervalSec);
     AddInLogMessageText ("%s", 0, szBuffer);
 
     if (g_wCollectDominoTransStats)
-        snprintf (szBuffer, sizeof (szBuffer), "Transaction Interval:  %3u seconds)", g_dwTransIntervalSec);
+        snprintf (szBuffer, sizeof (szBuffer), "Transaction Interval :  %3u seconds)", g_dwTransIntervalSec);
     else
-        snprintf (szBuffer, sizeof (szBuffer), "Transaction Interval:  -Disabled-)");
+        snprintf (szBuffer, sizeof (szBuffer), "Transaction Interval :  -Disabled-)");
     AddInLogMessageText ("%s", 0, szBuffer);
 
     if (g_wCollectDominoIOStat)
-        snprintf (szBuffer, sizeof (szBuffer), "I/O Stats   Interval:  %3u seconds)", g_dwIOStatIntervalSec);
+        snprintf (szBuffer, sizeof (szBuffer), "I/O Stats   Interval :  %3u seconds)", g_dwIOStatIntervalSec);
     else
-        snprintf (szBuffer, sizeof (szBuffer), "I/O Stats   Interval:  -Disabled-)");
+        snprintf (szBuffer, sizeof (szBuffer), "I/O Stats   Interval :  -Disabled-)");
     AddInLogMessageText ("%s", 0, szBuffer);
 
-    AddInLogMessageText ("Statistics File     :  %s", 0, g_szStatsFilename);
+    AddInLogMessageText ("Statistics File      :  %s", 0, g_szStatsFilename);
 
     if (g_wCollectDominoTransStats)
-        AddInLogMessageText ("Transactions File   :  %s", 0, g_szTransFilename);
+        AddInLogMessageText ("Transactions File    :  %s", 0, g_szTransFilename);
+
+    if (g_wMaintenanceEnabled)
+    {
+        AddInLogMessageText ("Maintenance mode     :  %s", 0, &g_tMaintenanceStart, "Until restart");
+    }
+
+    if (g_bMaintenanceStartSet)
+    {
+        lSecondsStart = TimeDateDifference (&g_tMaintenanceStart, &tNow);
+
+        ConvertToHumanReadableTime (abs (lSecondsStart), sizeof (szTime), szTime);
+
+        if (lSecondsStart > 0)
+            snprintf (szBuffer, sizeof (szBuffer), "(will start in %s)", szTime);
+        else if (bIsMaintanance)
+            snprintf (szBuffer, sizeof (szBuffer), "(since %s)", szTime);
+        else
+            *szBuffer = '\0';
+
+        AddInLogMessageText ("Maintenance start    :  %z %s", 0, &g_tMaintenanceStart, szBuffer);
+    }
+
+    if (g_bMaintenanceEndSet)
+    {
+        lSecondsEnd = TimeDateDifference (&g_tMaintenanceEnd ,&tNow);
+
+        ConvertToHumanReadableTime (lSecondsEnd, sizeof (szTime), szTime);
+
+        if (bIsMaintanance && (lSecondsEnd > 0))
+            snprintf (szBuffer, sizeof (szBuffer), "(will end in %s)", szTime);
+        else
+            *szBuffer = '\0';
+
+        AddInLogMessageText ("Maintenance end      :  %z %s", 0, &g_tMaintenanceEnd, szBuffer);
+    }
+
+    if (g_bMaintenanceStartSet && g_bMaintenanceEndSet)
+    {
+        lSeconds = TimeDateDifference (&g_tMaintenanceEnd, &g_tMaintenanceStart);
+
+        if (lSeconds < 0)
+        {
+            AddInLogMessageText ("Warning: Maintenance end time is earlier than start time", 0);
+        }
+    }
 }
 
 
-void FAR PASCAL ProcessCommand (const char *pszCmdBuffer)
+const char *GetStringAfterPrefix (const char *pszString, const char *pszPrefix)
 {
+    size_t cchPrefix;
+
+    if (!pszString || !pszPrefix)
+        return NULL;
+
+    cchPrefix = strlen(pszPrefix);
+
+    if (strncmp(pszString, pszPrefix, cchPrefix) != 0)
+        return NULL;
+
+    return pszString + cchPrefix;
+}
+
+
+STATUS ConvertTimeStringToTimedate (const char *pszTimeString, TIMEDATE *retpTimeDate)
+{
+    STATUS error = NOERROR;
+    char *p = (char *) &pszTimeString[0];
+
+    if (NULL == p)
+        return ERR_MISC_INVALID_ARGS;
+
+    error = ConvertTextToTIMEDATE (NULL, NULL, &p, (WORD) strlen (pszTimeString), retpTimeDate);
+
+    return error;
+}
+
+
+BOOL CheckMaintenanceEnd()
+{
+    LONG lSeconds = 0;
+
+    if (g_bMaintenanceEndSet)
+    {
+        lSeconds = TimeDateDifference (&g_tMaintenanceEnd, &g_tMaintenanceStart);
+        if (lSeconds < 0)
+        {
+            g_bMaintenanceEndSet = FALSE;
+
+            OSSetEnvironmentVariable (ENV_DOMPROM_MAINTENANCE_END, "");
+            AddInLogMessageText ("Info: Resetting earlier maintenance end time", 0);
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+
+BOOL UpdateMaintenance (const char *pszCmd)
+{
+    STATUS error    = NOERROR;
+    DWORD  dwMaintenanceMinutes = 0;
+    const  char *pszSub = NULL;
+
+    if ( (0 == strcasecmp (pszCmd, "off")) ||
+         (0 == strcasecmp (pszCmd, "clear")) )
+    {
+        g_bMaintenanceStartSet = FALSE;
+        g_bMaintenanceEndSet   = FALSE;
+
+        OSSetEnvironmentVariable (ENV_DOMPROM_MAINTENANCE_START, "");
+        OSSetEnvironmentVariable (ENV_DOMPROM_MAINTENANCE_END, "");
+
+        g_wMaintenanceEnabled = 0;
+
+        AddInLogMessageText ("%s: Maintenance disabled", 0, g_szTask);
+        goto Done;
+    }
+
+    pszSub = GetStringAfterPrefix (pszCmd, "on");
+    if (pszSub)
+    {
+        if (*pszSub)
+        {
+            dwMaintenanceMinutes = atoi (pszSub);
+        }
+
+        if (0 == dwMaintenanceMinutes)
+        {
+            g_wMaintenanceEnabled = 1;
+            AddInLogMessageText ("%s: Maintenance enabled until restart", 0, g_szTask);
+            goto Done;
+        }
+
+        OSCurrentTIMEDATE (&g_tMaintenanceStart);
+        OSCurrentTIMEDATE (&g_tMaintenanceEnd);
+        TimeDateAdjust (&g_tMaintenanceEnd, 0, dwMaintenanceMinutes, 0, 0, 0, 0);
+
+        OSSetEnvironmentTIMEDATE (ENV_DOMPROM_MAINTENANCE_START, &g_tMaintenanceStart);
+        OSSetEnvironmentTIMEDATE (ENV_DOMPROM_MAINTENANCE_END,   &g_tMaintenanceEnd);
+
+        g_bMaintenanceStartSet = TRUE;
+        g_bMaintenanceEndSet   = TRUE;
+
+        AddInLogMessageText ("%s: Maintenance set for %u minutes (from %z to %z)", 0, g_szTask, dwMaintenanceMinutes, &g_tMaintenanceStart, &g_tMaintenanceEnd);
+        goto Done;
+    }
+
+    pszSub = GetStringAfterPrefix (pszCmd, "start +");
+    if (pszSub)
+    {
+        if (*pszSub)
+            dwMaintenanceMinutes = atoi (pszSub);
+
+        if (0 == dwMaintenanceMinutes)
+        {
+            AddInLogMessageText ("%s: Invalid maintenance start option: %s", 0, g_szTask, pszCmd);
+            goto Done;
+        }
+
+        OSCurrentTIMEDATE (&g_tMaintenanceStart);
+        TimeDateAdjust (&g_tMaintenanceStart, 0, dwMaintenanceMinutes, 0, 0, 0, 0);
+
+        OSSetEnvironmentTIMEDATE (ENV_DOMPROM_MAINTENANCE_START, &g_tMaintenanceStart);
+        g_bMaintenanceStartSet = TRUE;
+        AddInLogMessageText ("%s: Maintenance start set: %z", 0, g_szTask, &g_tMaintenanceStart);
+
+        CheckMaintenanceEnd();
+        goto Done;
+    }
+
+    pszSub = GetStringAfterPrefix (pszCmd, "start ");
+    if (pszSub)
+    {
+        error = ConvertTimeStringToTimedate (pszSub, &g_tMaintenanceStart);
+
+        if (error)
+        {
+            AddInLogMessageText ("%s: Cannot convert maintenance start date", error, g_szTask);
+            goto Done;
+        }
+
+        OSSetEnvironmentTIMEDATE (ENV_DOMPROM_MAINTENANCE_START, &g_tMaintenanceStart);
+        g_bMaintenanceStartSet = TRUE;
+        AddInLogMessageText ("%s: Maintenance start set: %z", 0, g_szTask, &g_tMaintenanceStart);
+
+        CheckMaintenanceEnd();
+        goto Done;
+    }
+
+    pszSub = GetStringAfterPrefix (pszCmd, "end +");
+    if (pszSub)
+    {
+        if (*pszSub)
+            dwMaintenanceMinutes = atoi (pszSub);
+
+        if (0 == dwMaintenanceMinutes)
+        {
+            AddInLogMessageText ("%s: Invalid maintenance end option: %s", 0, g_szTask, pszCmd);
+            goto Done;
+        }
+
+        OSCurrentTIMEDATE (&g_tMaintenanceEnd);
+        TimeDateAdjust (&g_tMaintenanceEnd, 0, dwMaintenanceMinutes, 0, 0, 0, 0);
+
+        OSSetEnvironmentTIMEDATE (ENV_DOMPROM_MAINTENANCE_END,   &g_tMaintenanceEnd);
+        g_bMaintenanceEndSet   = TRUE;
+        AddInLogMessageText ("%s: Maintenance end set: %z", 0, g_szTask, &g_tMaintenanceEnd);
+        goto Done;
+    }
+
+    pszSub = GetStringAfterPrefix (pszCmd, "end ");
+    if (pszSub)
+    {
+        error = ConvertTimeStringToTimedate (pszSub, &g_tMaintenanceEnd);
+
+        if (error)
+        {
+            AddInLogMessageText ("%s: Cannot convert maintenance end date", error, g_szTask);
+            goto Done;
+        }
+
+        OSSetEnvironmentTIMEDATE (ENV_DOMPROM_MAINTENANCE_END, &g_tMaintenanceEnd);
+        g_bMaintenanceEndSet = TRUE;
+        AddInLogMessageText ("%s: Maintenance end set: %z", 0, g_szTask, &g_tMaintenanceEnd);
+        goto Done;
+    }
+
+    AddInLogMessageText ("%s: Invalid maintenance command: %s", 0, g_szTask, pszCmd);
+    return FALSE;
+
+Done:
+
+    return TRUE;
+
+}
+
+
+void ProcessCommand (const char *pszCmdBuffer)
+{
+    const char *pszCommand = NULL;
+
     if (IsNullStr (pszCmdBuffer))
     {
         return;
@@ -2248,9 +2873,20 @@ void FAR PASCAL ProcessCommand (const char *pszCmdBuffer)
         PrintHelp();
     }
 
-    else if (0 == strcasecmp (pszCmdBuffer, "config"))
+    else if ( (0 == strcasecmp (pszCmdBuffer, "config")) ||
+              (0 == strcasecmp (pszCmdBuffer, "status")) )
     {
         PrintConfig();
+    }
+
+    else if ((pszCommand = GetStringAfterPrefix (pszCmdBuffer, "maintenance ")))
+    {
+        UpdateMaintenance (pszCommand);
+    }
+
+    else if ((pszCommand = GetStringAfterPrefix (pszCmdBuffer, "maint ")))
+    {
+        UpdateMaintenance (pszCommand);
     }
 
     else
@@ -2260,7 +2896,7 @@ void FAR PASCAL ProcessCommand (const char *pszCmdBuffer)
 }
 
 
-BOOL PASCAL CheckAndProcessCommand (MQHANDLE hQueue)
+BOOL CheckAndProcessCommand (MQHANDLE hQueue)
 {
     STATUS error   = NOERROR;
     WORD   wMsgLen = 0;
@@ -2511,12 +3147,14 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
 
     AddInLogMessageText ("%s: %s (%s)", 0, g_szTask, g_szCopyright, g_szGitHubURL);
 
+    ReadStatisticsInfoFromEvents4();
+
     AddInSetStatusText ("Ready");
 
     while (0 == g_ShutdownPending)
     {
         AddInSetStatusText ("Collecting Stats");
-        error = GetDominoStatsTraverse (g_szStatsFilename);
+        error = ProcessDominoStatistics (g_szStatsFilename);
 
         if (g_wCollectDominoTransStats)
             ProcessTransStats (g_szTransFilename, g_dwTransIntervalSec);
@@ -2555,12 +3193,13 @@ invalid_syntax:
 
 Done:
 
-    DeleteAllStatsForPackage (g_szDominoHealth);
+    ProcessDominoStatistics (g_szStatsFilename, true);
+
+    /* Remove Transaction Domino stats file if present */
+    RemoveFile (g_szTransFilename, 1);
 
     /* Remove stats files on shutdown to not leave any stale *.prom stats files */
-
-    RemoveFile (g_szTransFilename, 1);
-    RemoveFile (g_szStatsFilename, 1);
+    DeleteAllStatsForPackage (g_szDominoHealth);
 
     if (hQueue)
     {
