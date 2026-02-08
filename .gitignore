@@ -7,3 +7,6 @@ exporter/*.obj
 prometheus.yml
 certs/*.pem
 certs/*.txt
+domfwd/domfwd
+domfwd/wal_test
+domfwd/*.o
