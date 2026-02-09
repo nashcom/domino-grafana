@@ -17,11 +17,17 @@ The Domino Log Forwarder is a helper program which takes log data from STDIN
 ## Environment Variables
 
 
-| Variable Name         | Description                   | Example                                        |
-|-----------------------|-------------------------------|----------------------------------------------- |
-| **LOKI_PUSH_API_URL** | Push URL for Loki Server      | https://loki.example.com:3101/loki/api/v1/push |
-| **LOKI_PUSH_TOKEN**   | Push Token for Loki Server    |                                                |
-| **DOMINO_OUTPUT_LOG** | Domino Output log file name   | /local/notesdata/notes.log                     |
+| Variable Name                | Description                      | Example                                        |
+|:-----------------------------|:---------------------------------|:-----------------------------------------------|
+| **LOKI_PUSH_API_URL**        | Push URL for Loki Server         | https://loki.example.com:3101/loki/api/v1/push |
+| **LOKI_PUSH_TOKEN**          | Push Token for Loki Server       | my-secure-token                                |
+| **LOKI_CA_FILE**             | Trusted Root CA File             | /local/notesdata/trusted_root.pem              |
+| **DOMINO_OUTPUT_LOG**        | Domino Output log file name      | /local/notesdata/notes.log                     |
+| **DOMFWD_LOGLEVEL**          | Log level for stdout logging     | 1                                              |
+| **DOMFWD_MIRROR_STDOUT**     | Mirror stdin to stdout           | 1                                              |
+| **DOMFWD_ANNOTATE_STDOUT**   | Write annotated logs to stdout   | /local/notesdata/notes.log                     |
+
+
 
 If no output log file is specified, log is written to STDOUT.
 Letting **domfwd** write the log file avoids a redirect of the output log.

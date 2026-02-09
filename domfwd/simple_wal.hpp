@@ -17,6 +17,8 @@ public:
 
     bool Init (const std::string& Path);
 
+    void LogMessage (const char *pszMessage);
+
     // Append a binary record
     bool Append (const void* pData, uint32_t Len);
 
@@ -33,13 +35,13 @@ public:
 
     bool GetCommit() {return m_bCommit; };
     void SetCommit (bool bEnable) {m_bCommit = bEnable; };
+    void SetLogLevel (size_t LogLevel) {m_LogLevel = LogLevel; };
 
     void SetWalFile (const std::string& Path) 
     {
         m_WalPath = Path;
         m_CommitPath = m_WalPath + ".commit";
     }
-
 
 private:
 
@@ -48,6 +50,7 @@ private:
     std::string m_CommitPath;
     int m_fd;
     bool m_bCommit;
+    size_t m_LogLevel;
 
     bool m_PendingReplay;
 

@@ -23,15 +23,22 @@
 #define DOMFWD_COPYRIGHT  "Copyright Daniel Nashed/Nash!Com 2026"
 #define DOMFWD_GITHUB_URL "https://github.com/nashcom/domino-grafana"
 
-#define DOMFWD_VERSION "0.9.0"
+#define DOMFWD_VERSION_MAJOR 0
+#define DOMFWD_VERSION_MINOR 9
+#define DOMFWD_VERSION_PATCH 1
+
+#define DOMFWD_VERSION_BUILD (DOMFWD_VERSION_MAJOR * 10000 +  DOMFWD_VERSION_MINOR * 100 + DOMFWD_VERSION_PATCH)
+
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
 #include <ctime>
 #include <fcntl.h>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -39,8 +46,11 @@
 #include <queue>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <unordered_map>
 
+
+#include <stdint.h>
 #include <curl/curl.h>
 #include <pthread.h>
 #include <signal.h>
@@ -118,37 +128,60 @@ private:
 
 /* Globals */
 
-char g_szHostname[1024]       = {0};
-char g_szJob[1024]            = {0};
-char g_szLogFilename[2048]    = {0};
-char g_szPidNbfFile[2048]     = {0};
-char g_szLokiPushApiURL[1024] = {0};
-char g_szLokiPushToken[1024]  = {0};
-char g_szInputLogFile[2048]   = {0};
-char g_szOutputLogFile[2048]  = {0};
+char g_szHostname[1024]        = {0};
+char g_szJob[1024]             = {0};
+char g_szLogFilename[2048]     = {0};
+char g_szPidNbfFile[2048]      = {0};
+char g_szLokiPushApiURL[1024]  = {0};
+char g_szLokiPushToken[1024]   = {0};
+char g_szLokiCaFile[1024]      = {0};
+char g_szInputLogFile[2048]    = {0};
+char g_szOutputLogFile[2048]   = {0};
+char g_szMetricsFileName[2048] = {0};
 
-char g_szNotesDataDir[1024]   = "/local/notesdata";
-char g_szNamespace[1024]      = "domino";
-char g_szPod[1024]            = "newton.nashcom.de";
+char g_szNotesDataDir[1024]    = "/local/notesdata";
+char g_szNamespace[1024]       = "domino";
+char g_szPod[1024]             = "newton.nashcom.de";
 
-char g_szVersion[]            = DOMFWD_VERSION;
-char g_szCopyright[]          = DOMFWD_COPYRIGHT;
-char g_szGitHubURL[]          = DOMFWD_GITHUB_URL;
-char g_szTask[]               = "domfwd";
+char g_szVersion[40]           = {0};
+char g_szCopyright[]           = DOMFWD_COPYRIGHT;
+char g_szGitHubURL[]           = DOMFWD_GITHUB_URL;
+char g_szTask[]                = "domfwd";
 
-size_t g_ShutdownRequested = 0;
-size_t g_ReloadRequested   = 0;
-size_t g_PushThreadRunning = 0;
-size_t g_WalThreadRunning  = 0;
+char  g_szPromTypeGauge[]      = "gauge";
+char  g_szPromTypeCounter[]    = "counter";
+char  g_szPromTypeUntyped[]    = "untyped";
+char  g_szPromPrefix[]         = "domfwd";
+char  g_szEmpty[]              = "";
 
-pthread_t    g_WalThreadInstance = {0};
-pthread_t    g_PushThreadInstance = {0};
-struct stat  g_PidNbfStat {};
-string_fifo  g_LogFifo;
-int          g_fdOutputLogFile = -1;
-int          g_fdOut = fileno(stdout);
+size_t g_ShutdownRequested     = 0;
+size_t g_ReloadRequested       = 0;
+size_t g_PushThreadRunning     = 0;
+size_t g_WalThreadRunning      = 0;
+size_t g_MetricsThreadRunning  = 0;
+size_t g_LogLevel              = 0;
+size_t g_Mirror2Stdout         = 0;
+size_t g_Annotate2Stdout       = 0;
+
+pthread_t g_WalThreadInstance     = {0};
+pthread_t g_PushThreadInstance    = {0};
+pthread_t g_MetricsThreadInstance = {0};
+
+time_t g_tStartTime = time (NULL);
+
+int g_fdOutputLogFile = -1;
+int g_fdStdOut = fileno (stdout);
+
+struct stat g_PidNbfStat {};
+string_fifo g_LogFifo;
 
 SimpleWAL g_Wal;
+
+std::atomic<std::int64_t> g_Metric_LogLines         {0};
+std::atomic<std::int64_t> g_Metric_PushSuccess      {0};
+std::atomic<std::int64_t> g_Metric_PushErrors       {0};
+std::atomic<std::int64_t> g_Metric_PushRetrySuccess {0};
+std::atomic<std::int64_t> g_Metric_PushRetryErrors  {0};
 
 
 bool IsNullStr (const char *pszStr)
@@ -180,6 +213,21 @@ void LogError (const char *pszMessage)
     fprintf (stderr, "%s: Error - %s\n", g_szTask, pszMessage);
 }
 
+void LogError (const char *pszMessage, const char *pszErrorText)
+{
+    if (IsNullStr (pszMessage))
+        return;
+
+    if (IsNullStr (pszErrorText))
+    {
+        LogError (pszMessage);
+    }
+    else
+    {
+        fprintf (stderr, "%s: Error - %s: %s\n", g_szTask, pszMessage, pszErrorText);
+    }
+}
+
 
 int IsDirectoryWritable (const char *pszPath)
 {
@@ -201,6 +249,42 @@ int IsDirectoryWritable (const char *pszPath)
 }
 
 
+bool MakeDirectoryTree (const char *pszDirectory)
+{
+    std::error_code ec;
+
+    if (IsNullStr (pszDirectory))
+        return false;
+
+    if (std::filesystem::exists(pszDirectory))
+        return true;
+
+    std::filesystem::create_directories(pszDirectory, ec);
+
+    if (ec)
+        return false;
+
+    return true;
+}
+
+
+bool MakeDirectoryTreeFromFileName (const char *pszFile)
+{
+
+    if (std::filesystem::exists (pszFile))
+        return true;
+
+    {
+        std::filesystem::path file = pszFile;
+        std::filesystem::path dir = file.parent_path();
+
+        MakeDirectoryTree (dir.c_str());
+    }
+
+    return true;
+}
+
+
 void sleep_ms (unsigned int ms)
 {
     struct timespec ts;
@@ -209,6 +293,24 @@ void sleep_ms (unsigned int ms)
     ts.tv_nsec = (ms % 1000) * 1000000L;
 
     nanosleep (&ts, NULL);
+}
+
+
+bool IdleDelay (size_t seconds)
+{
+    while (seconds)
+    {
+        if (g_ShutdownRequested)
+            return true;
+
+        sleep (1);
+        seconds--;
+    }
+
+    if (g_ShutdownRequested)
+        return true;
+
+    return false;
 }
 
 
@@ -382,13 +484,22 @@ bool GetProcessName (PidMap& pidMap, pid_t pid, std::string& processName)
 }
 
 
-static std::string GetEpochNanoseconds()
+static int64_t GetEpochNanoseconds()
 {
     struct timespec ts {};
     clock_gettime (CLOCK_REALTIME, &ts);
 
-    int64_t ns = (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
-    return std::to_string(ns);
+    return ((int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec);
+}
+
+
+static std::string GetEpochNanosecondsText()
+{
+    struct timespec ts {};
+    clock_gettime (CLOCK_REALTIME, &ts);
+
+    int64_t ns = GetEpochNanoseconds();
+    return std::to_string (ns);
 }
 
 
@@ -419,7 +530,7 @@ std::string BuildLokiPayload (const std::string& line, const pid_t pid, const ch
 
     rapidjson::Value valueEntry (rapidjson::kArrayType);
 
-    std::string ts = GetEpochNanoseconds();
+    std::string ts = GetEpochNanosecondsText();
 
     valueEntry.PushBack (rapidjson::Value (ts.c_str(), alloc), alloc);
     valueEntry.PushBack (rapidjson::Value (line.c_str(), alloc), alloc);
@@ -464,6 +575,7 @@ bool SendPayloadToWAL (const std::string& payload)
 
 bool SendAlloyPayload (CURL* pCurl, const char *pszURL, const char *pg_szLokiPushToken, const char* pszBuffer, size_t BufferLen)
 {
+    bool bSuccess = false;
     char szErrorBuffer[CURL_ERROR_SIZE+10] = {0};
     CURLcode rc = CURLE_OK;
     struct curl_slist* pHeaders = nullptr;
@@ -496,6 +608,11 @@ bool SendAlloyPayload (CURL* pCurl, const char *pszURL, const char *pg_szLokiPus
     curl_easy_setopt (pCurl, CURLOPT_POSTFIELDS, pszBuffer);
     curl_easy_setopt (pCurl, CURLOPT_POSTFIELDSIZE, BufferLen);
 
+    if (*g_szLokiCaFile)
+    {
+        curl_easy_setopt (pCurl, CURLOPT_CAINFO, g_szLokiCaFile);
+    }
+
     if (false == IsNullStr (pg_szLokiPushToken))
     {
         curl_easy_setopt (pCurl, CURLOPT_XOAUTH2_BEARER, pg_szLokiPushToken);
@@ -506,10 +623,11 @@ bool SendAlloyPayload (CURL* pCurl, const char *pszURL, const char *pg_szLokiPus
 
     if (CURLE_OK != rc)
     {
-        LogError ("Curl operation failed");
-        std::cerr << "curl error: " << curl_easy_strerror (rc) << ": " << szErrorBuffer << "\n";
+        LogError ("Curl operation failed", szErrorBuffer);
         goto Done;
     }
+
+    bSuccess = true;
 
 Done:
 
@@ -519,7 +637,7 @@ Done:
         pHeaders = nullptr;
     }
 
-    return true;
+    return bSuccess;
 }
 
 
@@ -531,7 +649,13 @@ void *PushThread (void *arg)
     PidMap pidMap;
     pid_t  pid = 0;
 
+    ssize_t nread    = 0;
+    ssize_t nwritten = 0;
+
     g_PushThreadRunning = 1;
+
+    if (g_LogLevel)
+        LogMessage ("Push Thread started");
 
     if (*g_szLokiPushApiURL)
     {
@@ -552,21 +676,40 @@ void *PushThread (void *arg)
             pid = ExtractProcessId (line);
 
             GetProcessName (pidMap, pid, processName);
-            const std::string payload = BuildLokiPayload (line, pid, processName.c_str());
+            std::string payload = BuildLokiPayload (line, pid, processName.c_str());
 
-            /* WAL-TESTING can be used to test WAL logic */
-            if (payload.find ("WAL-TESTING") != std::string::npos)
+            g_Metric_LogLines.fetch_add (1, std::memory_order_relaxed);
+
+            if (*g_szLokiPushApiURL)
             {
-                SendPayloadToWAL (payload);
-            }
-            else
-            {
-                if (*g_szLokiPushApiURL)
+                /* WAL-TESTING can be used to test WAL logic */
+                if (payload.find ("WAL-TESTING") != std::string::npos)
+                {
+                    LogMessage ("WAL-TESTING string received");
+                    SendPayloadToWAL (payload);
+                }
+                else
                 {
                     if (false == SendAlloyPayload (pCurl, g_szLokiPushApiURL, g_szLokiPushToken, payload.c_str(), payload.size()))
                     {
+                        g_Metric_PushErrors.fetch_add (1, std::memory_order_relaxed);;
                         SendPayloadToWAL (payload);
                     }
+                    else
+                    {
+                        g_Metric_PushSuccess.fetch_add (1, std::memory_order_relaxed);;
+                    }
+                }
+            }
+
+            if (g_Annotate2Stdout)
+            {
+                payload.push_back ((char) '\n');
+                nread = payload.size();
+                nwritten = write (g_fdStdOut, payload.data(), nread);
+                if (nread != nwritten)
+                {
+                    /* LATER: Should we log this error and where ... ? */
                 }
             }
         }
@@ -582,12 +725,16 @@ Done:
 
     g_PushThreadRunning = 0;
 
+    if (g_LogLevel)
+        LogMessage ("Push Thread ended");
+
     return NULL;
 }
 
 
 bool PushWalEntries ()
 {
+    bool bSuccess = false;
     CURL* pCurl = nullptr;
 
     if (false == g_Wal.IsReplayPending())
@@ -601,9 +748,18 @@ bool PushWalEntries ()
         return false;
     }
 
-    g_Wal.Replay ([pCurl] (const std::vector<uint8_t>& Record)
+    bSuccess = g_Wal.Replay ([pCurl] (const std::vector<uint8_t>& Record)
     {
-        return SendAlloyPayload (pCurl, g_szLokiPushApiURL, g_szLokiPushToken, (const char *) Record.data(), Record.size());
+        if (SendAlloyPayload (pCurl, g_szLokiPushApiURL, g_szLokiPushToken, (const char *) Record.data(), Record.size()))
+        {
+            g_Metric_PushRetrySuccess.fetch_add (1, std::memory_order_relaxed);;
+            return true;
+        }
+        else
+        {
+            g_Metric_PushRetryErrors.fetch_add (1, std::memory_order_relaxed);;
+            return false;
+        }
     });
 
     if (pCurl)
@@ -612,7 +768,7 @@ bool PushWalEntries ()
         pCurl = nullptr;
     }
 
-    return true;
+    return bSuccess;
 }
 
 
@@ -621,17 +777,159 @@ void *WalThread (void *arg)
     (void)arg;
     g_WalThreadRunning = 1;
 
+    if (g_LogLevel)
+        LogMessage ("WAL Thread started");
+
     while (0 == g_ShutdownRequested)
     {
         if (g_Wal.IsReplayPending())
         {
-            PushWalEntries();
+            if (g_ShutdownRequested)
+                break;
+
+            if (false == PushWalEntries())
+            {
+                LogError ("PushWalEntries failed - Waiting 120 seconds");
+                if (IdleDelay (120))
+                {
+                    break;
+                }
+            }
         }
 
         sleep_ms (2);
     }
 
     g_WalThreadRunning = 0;
+
+    if (g_LogLevel)
+        LogMessage ("WAL Thread ended");
+
+    return NULL;
+}
+
+
+bool WriteHelpAndType (FILE *fp, const char *pszStatName, const char *pszType, const char *pszDescription)
+{
+    if (NULL == fp)
+        return false;
+
+    if (IsNullStr (pszStatName))
+        return false;
+
+    if (IsNullStr (pszType))
+        pszType = g_szPromTypeGauge;
+
+    if (NULL == pszDescription)
+        pszDescription = g_szEmpty;
+
+    fprintf (fp, "# HELP %s_%s %s\n", g_szPromPrefix, pszStatName, pszDescription);
+    fprintf (fp, "# TYPE %s_%s %s\n", g_szPromPrefix, pszStatName, pszType);
+
+    return true;
+}
+
+
+bool WriteStatsEntryToFile (FILE *fp, uint64_t ValueNum, const char *pszStatName)
+{
+    if (NULL == fp)
+        return false;
+
+    if (NULL == pszStatName)
+        return false;
+
+    fprintf (fp, "%s_%s %zu\n", g_szPromPrefix, pszStatName, ValueNum);
+
+    return true;
+}
+
+bool WriteStatsEntryToFileWithHelp (FILE *fp, uint64_t ValueNum, const char *pszStatName, const char *pszType, const char *pszDescription)
+{
+    if (NULL == fp)
+        return false;
+
+    if (NULL == pszStatName)
+        return false;
+
+    WriteHelpAndType (fp, pszStatName, pszType, pszDescription);
+    fprintf (fp, "%s_%s %zu\n", g_szPromPrefix, pszStatName, ValueNum);
+
+    return true;
+}
+
+bool WriteMetrics (bool bShutdown = false)
+{
+    char    szTempFilename[2200] = {0};
+    char    szTmp[1024]          = {0};
+    FILE    *fp = NULL;
+    time_t  tNow = time(NULL);
+
+    if (IsNullStr (g_szMetricsFileName))
+        return false;
+
+    snprintf (szTempFilename, sizeof (szTempFilename), "%s.tmp", g_szMetricsFileName);
+
+    fp = fopen (szTempFilename, "w");
+
+    if (NULL == fp)
+    {
+        return false;
+    }
+
+    snprintf (szTmp, sizeof (szTmp), "Domino Log Forwarder Build Version %s", g_szVersion);
+    WriteStatsEntryToFileWithHelp (fp, DOMFWD_VERSION_BUILD, "build_number", g_szPromTypeGauge, szTmp);
+
+    WriteStatsEntryToFileWithHelp (fp, g_tStartTime, "started_timestamp_seconds", g_szPromTypeGauge, "Unix timestamp when forwarder was started");
+    WriteStatsEntryToFileWithHelp (fp, tNow - g_tStartTime, "uptime_seconds", g_szPromTypeGauge, "Uptime in seconds");
+
+    WriteStatsEntryToFileWithHelp (fp, time(NULL), "lastupdate_timestamp_seconds", g_szPromTypeGauge, "Unix timestamp for last metrics update");
+    WriteStatsEntryToFileWithHelp (fp, g_Metric_LogLines.load (std::memory_order_relaxed), "lines_received_total", g_szPromTypeGauge, "Total number of log lines received by forwarder");
+
+    WriteHelpAndType      (fp, "push_total", g_szPromTypeCounter, "Total number of log lines pushed to the destination, labeled by result");
+    WriteStatsEntryToFile (fp, g_Metric_PushSuccess.load (std::memory_order_relaxed),      "push_total{result=\"success\"}");
+    WriteStatsEntryToFile (fp, g_Metric_PushErrors.load (std::memory_order_relaxed),       "push_total{result=\"error\"}");
+
+    WriteHelpAndType      (fp, "push_retry_total", g_szPromTypeCounter, "Total number of log lines pushed to the destination, labeled by result");
+    WriteStatsEntryToFile (fp, g_Metric_PushRetrySuccess.load (std::memory_order_relaxed), "push_retry_total{result=\"success\"}");
+    WriteStatsEntryToFile (fp, g_Metric_PushRetryErrors.load (std::memory_order_relaxed),  "push_retry_total{result=\"error\"}");
+
+    if (bShutdown)
+    {
+        WriteStatsEntryToFileWithHelp (fp, time(NULL), "shutdown_timestamp_seconds", g_szPromTypeGauge, "Unix timestamp when forwarder was shutdown");
+    }
+
+    if (fp)
+    {
+        fclose (fp);
+        fp = NULL;
+
+        rename (szTempFilename, g_szMetricsFileName);
+    }
+
+    return true;
+}
+
+void *MetricsThread (void *arg)
+{
+    (void)arg;
+
+    g_MetricsThreadRunning = 1;
+
+    if (g_LogLevel)
+        LogMessage ("Metrics Thread started");
+
+    while (true)
+    {
+        if (IdleDelay (10))
+            break;
+
+        WriteMetrics();
+    }
+
+    g_MetricsThreadRunning = 0;
+
+    if (g_LogLevel)
+        LogMessage ("Metrics Thread ended");
 
     return NULL;
 }
@@ -652,16 +950,32 @@ void handle_signal (int sig)
     }
 }
 
+size_t GetEnvironmentValue (const char *pszEnvironmentName)
+{
+    char *p = NULL;
+
+    if (IsNullStr (pszEnvironmentName))
+        return 0;
+
+    p = getenv (pszEnvironmentName);
+
+    if (NULL == p)
+        return 0;
+
+    return atoi (p);
+}
+
 
 int main()
 {
     char szWalFile[2048] = {0};
     char *p = NULL;
 
-    char    *pLine   = NULL;
-    size_t  len      = 0;
-    ssize_t nread    = 0;
-    ssize_t nwritten = 0;
+    char    *pLine       = NULL;
+    size_t  CountSeconds = 0;
+    size_t  len          = 0;
+    ssize_t nread        = 0;
+    ssize_t nwritten     = 0;
 
     struct sigaction sa {};
 
@@ -672,6 +986,12 @@ int main()
     sigaction (SIGINT,  &sa, NULL);
     sigaction (SIGTERM, &sa, NULL);
     sigaction (SIGHUP,  &sa, NULL);
+
+    snprintf (g_szVersion, sizeof (g_szVersion), "%d.%d.%d", DOMFWD_VERSION_MAJOR, DOMFWD_VERSION_MINOR, DOMFWD_VERSION_PATCH);
+
+    g_LogLevel        = GetEnvironmentValue ("DOMFWD_LOGLEVEL");
+    g_Mirror2Stdout   = GetEnvironmentValue ("DOMFWD_MIRROR_STDOUT");
+    g_Annotate2Stdout = GetEnvironmentValue ("DOMFWD_ANNOTATE_STDOUT");
 
     p = getenv ("DOMINO_DATA_PATH");
     if (p)
@@ -686,6 +1006,18 @@ int main()
     }
 
     snprintf (szWalFile, sizeof (szWalFile), "%s/nshlog.wal", g_szNotesDataDir);
+
+    p = getenv ("DOMFWD_PROM_FILE");
+    if (p)
+    {
+        snprintf (g_szMetricsFileName, sizeof (g_szMetricsFileName), "%s", p);
+    }
+    else
+    {
+        snprintf (g_szMetricsFileName, sizeof (g_szMetricsFileName), "%s/domino/stats/domfwd.prom", g_szNotesDataDir);
+    }
+
+    MakeDirectoryTreeFromFileName (g_szMetricsFileName);
 
     g_Wal.Init (szWalFile);
 
@@ -709,6 +1041,12 @@ int main()
         snprintf (g_szLokiPushApiURL, sizeof (g_szLokiPushApiURL), "%s", p);
     }
 
+    p = getenv ("LOKI_CA_FILE");
+    if (p)
+    {
+        snprintf (g_szLokiCaFile, sizeof (g_szLokiCaFile), "%s", p);
+    }
+
     p = getenv ("DOMINO_INPUT_FILE");
     if (p)
     {
@@ -724,9 +1062,6 @@ int main()
     if (false == IsNullStr (g_szOutputLogFile))
     {
         g_fdOutputLogFile = open (g_szOutputLogFile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
-
-        if (g_fdOutputLogFile >= 0)
-            g_fdOut = g_fdOutputLogFile;
     }
 
     fprintf (stderr, "\nDomino Log Forwarder %s - %s %s\n\n", g_szVersion, g_szCopyright, g_szGitHubURL);
@@ -743,15 +1078,36 @@ int main()
         return EXIT_FAILURE;
     }
 
+    if (0 != pthread_create (&g_MetricsThreadInstance, NULL, MetricsThread, NULL))
+    {
+        perror ("pthread_create");
+        return EXIT_FAILURE;
+    }
+
+    /* Read from stdin and process the log line (annotating it, writing it to a log, pushing it to Loki, ...) */
     while ((nread = getline (&pLine, &len, stdin)) != -1)
     {
         if (nread == 0)
             continue;
 
-        nwritten = write (g_fdOut, pLine, nread);
-        if (nread != nwritten)
+        /* Mirror unmodified to a log file */
+        if (g_fdOutputLogFile >= 0)
         {
-            /* Should we log this and where ... ? */
+            nwritten = write (g_fdOutputLogFile, pLine, nread);
+            if (nread != nwritten)
+            {
+                /* LATER: Should we log this error and where ... ? */
+            }
+        }
+
+        /* Mirror it unmodified to stdout */
+        if (g_Mirror2Stdout)
+        {
+            nwritten = write (g_fdStdOut, pLine, nread);
+            if (nread != nwritten)
+            {
+                /* LATER: Should we log this error and where ... ? */
+            }
         }
 
         /* Remove new line */
@@ -764,29 +1120,38 @@ int main()
 
     sleep (2);
 
-    LogMessage ("Terminating");
+    LogMessage ("Waiting for shutdown to complete");
 
     while (g_Wal.IsReplayPending())
     {
         sleep_ms (10);
+
+        if (g_ShutdownRequested)
+            break;
     }
 
     g_ShutdownRequested = 1;
     g_LogFifo.shutdown();
 
-    while (g_PushThreadRunning)
+    while (g_PushThreadRunning || g_WalThreadRunning || g_MetricsThreadRunning)
     {
-        sleep_ms (10);
-    }
+        CountSeconds++;
+        if (0 == (CountSeconds %10))
+        {
+            if (g_LogLevel)
+                fprintf (stderr, "Waiting %lu seconds for threads to terminate (Push: %lu, Wal: %lu, Metrics: %lu)\n", CountSeconds, g_PushThreadRunning, g_WalThreadRunning, g_MetricsThreadRunning);
+        }
 
-    while (g_WalThreadRunning)
-    {
-        sleep_ms (10);
+        sleep_ms (1000);
+
+        if (CountSeconds > 300)
+        {
+            fprintf (stderr, "Failed to terminate all threads (Push: %lu, Wal: %lu, Metrics: %lu)\n", g_PushThreadRunning, g_WalThreadRunning, g_MetricsThreadRunning);
+            break;
+        }
     }
 
 Done:
-
-    LogMessage ("Thread Terminated");
 
     curl_global_cleanup();
 
@@ -801,6 +1166,9 @@ Done:
         free (pLine);
         pLine = NULL;
     }
+
+    WriteMetrics (true);
+    LogMessage ("Shutdown completed");
 
     return 0;
 }

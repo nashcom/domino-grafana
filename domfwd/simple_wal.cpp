@@ -22,6 +22,16 @@ off_t get_file_size (int fd)
     return StatBuf.st_size;
 }
 
+void SimpleWAL::LogMessage (const char *pszMessage)
+{
+    if (NULL == pszMessage)
+        return;
+
+    if (m_LogLevel)
+    {
+        fprintf (stderr, "%s\n", pszMessage);
+    }
+}
 
 SimpleWAL::SimpleWAL ()
 {
@@ -288,7 +298,7 @@ bool SimpleWAL::ClearInternal()
 
     ::unlink (m_CommitPath.c_str());
 
-    fprintf (stderr, "WAL reset\n");
+    LogMessage ("WAL reset");
 
     return true;
 }
