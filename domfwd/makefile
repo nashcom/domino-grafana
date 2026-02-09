@@ -23,4 +23,5 @@ wal_test: wal_test.cpp $(WAL_SRC) $(WAL_HDR)
 clean:
 	rm -f $(TARGET)
 	rm -f $(TARGET_TEST)
+	rm -f *.o
 

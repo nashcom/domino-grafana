@@ -34,7 +34,11 @@ public:
     bool GetCommit() {return m_bCommit; };
     void SetCommit (bool bEnable) {m_bCommit = bEnable; };
 
-    void SetWalFile (const std::string& Path) { m_WalPath = Path; }
+    void SetWalFile (const std::string& Path) 
+    {
+        m_WalPath = Path;
+        m_CommitPath = m_WalPath + ".commit";
+    }
 
 
 private:

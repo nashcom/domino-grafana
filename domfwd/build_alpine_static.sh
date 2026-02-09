@@ -1,0 +1,1 @@
+docker run --rm -v $(pwd):/src -w /src alpine:latest sh -c "apk add --no-cache g++ make musl-dev curl-dev curl-static rapidjson-dev openssl-libs-static zlib-static brotli-static zstd-static libpsl-static libunistring-static libidn2-static nghttp2-static nghttp3-static c-ares && cd /src  && make -f makefile_alpine_static"

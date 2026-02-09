@@ -11,15 +11,15 @@
 
 off_t get_file_size (int fd)
 {
-    struct stat St;
+    struct stat StatBuf;
 
     if (fd < 0)
         return 0;
 
-    if (::fstat (fd, &St) < 0)
+    if (::fstat (fd, &StatBuf) < 0)
         return -1;
 
-    return St.st_size;
+    return StatBuf.st_size;
 }
 
 

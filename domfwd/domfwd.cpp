@@ -181,6 +181,26 @@ void LogError (const char *pszMessage)
 }
 
 
+int IsDirectoryWritable (const char *pszPath)
+{
+    struct stat st;
+
+    if (IsNullStr (pszPath))
+        return 0;
+
+    if (stat (pszPath, &st) != 0)
+        return 0;
+
+    if (!S_ISDIR(st.st_mode))
+        return 0;
+
+    if (access(pszPath, W_OK))
+        return 0;
+
+    return 1;
+}
+
+
 void sleep_ms (unsigned int ms)
 {
     struct timespec ts;
@@ -659,6 +679,12 @@ int main()
         snprintf (g_szNotesDataDir, sizeof (g_szNotesDataDir), "%s", p);
     }
 
+    if (0 == IsDirectoryWritable (g_szNotesDataDir))
+    {
+        LogError ("Cannot write int server's data directory");
+        goto Done;
+    }
+
     snprintf (szWalFile, sizeof (szWalFile), "%s/nshlog.wal", g_szNotesDataDir);
 
     g_Wal.Init (szWalFile);
@@ -717,7 +743,6 @@ int main()
         return EXIT_FAILURE;
     }
 
-
     while ((nread = getline (&pLine, &len, stdin)) != -1)
     {
         if (nread == 0)
@@ -758,6 +783,8 @@ int main()
     {
         sleep_ms (10);
     }
+
+Done:
 
     LogMessage ("Thread Terminated");
 
