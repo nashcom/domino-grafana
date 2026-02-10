@@ -13,7 +13,6 @@ The Domino Log Forwarder is a helper program which takes log data from STDIN
 /opt/hcl/domino/bin/server | domfwd
 ```
 
-
 ## Environment Variables
 
 
@@ -22,7 +21,7 @@ The following variables are used to enable forwarding.
 The following three output options exists and can be combined.
 By default all log data is written to the Notes output log specified via **DOMINO_OUTPUT_LOG**.
 
-In addition logs can be
+In addition to the standard log file logs can be
 
 - Pushed directly to Loki over HTTP API
 - Written annotated to STOUT in JSON format ready for Alloy ingestion
@@ -30,6 +29,7 @@ In addition logs can be
 - Mirrored to STDOUT for compatibility
 
 
+### Output related configuration
 
 | Variable Name                | Description                       | Example / Comments                             |
 |:-----------------------------|:----------------------------------|:-----------------------------------------------|
@@ -39,6 +39,8 @@ In addition logs can be
 | **DOMFWD_ANNOTATE_STDOUT**   | Write JSON formatted Alloy STDOUT | 1                                              |
 | **DOMFWD_ANNOATED_LOG**      | Write JSON formatted Alloy file   | /var/log/domfwd.json                           |
 
+
+### Additional configuration
 
 | Variable Name                | Description                       | Example / Comments                             |
 |:-----------------------------|:----------------------------------|:-----------------------------------------------|
