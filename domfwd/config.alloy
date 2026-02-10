@@ -1,0 +1,66 @@
+logging {
+  level = env("ALLOY_LOG_LEVEL")
+}
+
+loki.write "loki" {
+  endpoint {
+    url = env("ALLOY_PUSH_TARGET")
+
+    bearer_token = env("ALLOY_LOKI_TOKEN")
+
+    tls_config {
+      ca_file = env("ALLOY_LOKI_CA_FILE")
+    }
+  }
+}
+
+local.file_match "logfiles" {
+  path_targets = [
+    {
+      __path__  = env("ALLOY_LOKI_LOGFILE"),
+      job       = env("ALLOY_LOKI_JOB"),
+      namespace = env("ALLOY_LOKI_NAMESPACE"),
+      pod       = env("ALLOY_LOKI_POD"),
+    },
+  ]
+}
+
+loki.source.file "domino" {
+  targets = local.file_match.logfiles.targets
+
+  forward_to = [
+    loki.process.domino.receiver,
+  ]
+}
+
+loki.process "domino" {
+
+  stage.json {
+    expressions = {
+      ts      = "ts",
+      pid     = "pid",
+      process = "process",
+      line    = "line",
+    }
+  }
+
+  stage.timestamp {
+    source = "ts"
+    format = "UnixNano"
+  }
+
+  stage.output {
+    source = "line"
+  }
+
+  stage.labels {
+    values = {
+      process = "process",
+      pid = "pid",
+    }
+  }
+
+  forward_to = [
+    loki.write.loki.receiver,
+  ]
+}

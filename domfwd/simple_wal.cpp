@@ -9,6 +9,7 @@
 
 #include "simple_wal.hpp"
 
+
 off_t get_file_size (int fd)
 {
     struct stat StatBuf;
@@ -21,6 +22,7 @@ off_t get_file_size (int fd)
 
     return StatBuf.st_size;
 }
+
 
 void SimpleWAL::LogMessage (const char *pszMessage)
 {

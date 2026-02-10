@@ -125,18 +125,34 @@ private:
     bool m_bShutdown = false;
 };
 
+/* Environment Variables */
+
+char g_szEnvLokiPushApiUrl[]   = "LOKI_PUSH_API_URL";
+char g_szEnvLokiPushToken[]    = "LOKI_PUSH_TOKEN";
+char g_szEnvLokiCaFile[]       = "LOKI_CA_FILE";
+char g_szEnvLokiJob[]          = "LOKI_JOB";
+char g_szEnvDominoDataPath[]   = "DOMINO_DATA_PATH";
+char g_szEnvDominoOutputLog[]  = "DOMINO_OUTPUT_LOG";
+char g_szEnvDominoInputFile[]  = "DOMINO_INPUT_FILE";
+char g_szEnvLogLevel[]         = "DOMFWD_LOGLEVEL";
+char g_szEnvMirrorToStdout[]   = "DOMFWD_MIRROR_STDOUT";
+char g_szEnvAnnotateToStdout[] = "DOMFWD_ANNOTATE_STDOUT";
+char g_szEnvAnnotateLogfile[]  = "DOMFWD_ANNOATED_LOG";
+char g_szEnvPromFile[]         = "DOMFWD_PROM_FILE";
+char g_szEnvHostname[]         = "DOMFWD_HOSTNAME";
 
 /* Globals */
 
 char g_szHostname[1024]        = {0};
 char g_szJob[1024]             = {0};
-char g_szLogFilename[2048]     = {0};
 char g_szPidNbfFile[2048]      = {0};
 char g_szLokiPushApiURL[1024]  = {0};
 char g_szLokiPushToken[1024]   = {0};
 char g_szLokiCaFile[1024]      = {0};
+char g_szWalFile[2048]         = {0};
 char g_szInputLogFile[2048]    = {0};
 char g_szOutputLogFile[2048]   = {0};
+char g_szAnnotateLogfile[2048] = {0};
 char g_szMetricsFileName[2048] = {0};
 
 char g_szNotesDataDir[1024]    = "/local/notesdata";
@@ -153,6 +169,7 @@ char  g_szPromTypeCounter[]    = "counter";
 char  g_szPromTypeUntyped[]    = "untyped";
 char  g_szPromPrefix[]         = "domfwd";
 char  g_szEmpty[]              = "";
+char  g_szProcessEmpty[]       = "unknown";
 
 size_t g_ShutdownRequested     = 0;
 size_t g_ReloadRequested       = 0;
@@ -162,6 +179,7 @@ size_t g_MetricsThreadRunning  = 0;
 size_t g_LogLevel              = 0;
 size_t g_Mirror2Stdout         = 0;
 size_t g_Annotate2Stdout       = 0;
+size_t g_ShutdownMaxWaitSec    = 60;
 
 pthread_t g_WalThreadInstance     = {0};
 pthread_t g_PushThreadInstance    = {0};
@@ -169,7 +187,8 @@ pthread_t g_MetricsThreadInstance = {0};
 
 time_t g_tStartTime = time (NULL);
 
-int g_fdOutputLogFile = -1;
+int g_fdOutputLogFile     = -1;
+int g_fdAnnotationLogFile = -1;
 int g_fdStdOut = fileno (stdout);
 
 struct stat g_PidNbfStat {};
@@ -198,12 +217,19 @@ bool IsNullStr (const char *pszStr)
 
 void LogMessage (const char *pszMessage)
 {
-    if (IsNullStr (pszMessage))
+    if (NULL == pszMessage)
         return;
 
     fprintf (stderr, "%s: %s\n", g_szTask, pszMessage);
 }
 
+void LogInfo (const char *pszMessage)
+{
+    if (NULL == pszMessage)
+        return;
+
+    fprintf (stderr, "%s\n", pszMessage);
+}
 
 void LogError (const char *pszMessage)
 {
@@ -520,7 +546,11 @@ std::string BuildLokiPayload (const std::string& line, const pid_t pid, const ch
     streamLabels.AddMember ("pod",       rapidjson::Value(g_szPod, alloc), alloc);
     streamLabels.AddMember ("pid",       rapidjson::Value(std::to_string(pid).c_str(), alloc), alloc);
 
-    if (!IsNullStr(pszProcess))
+    if (IsNullStr(pszProcess))
+    {
+        streamLabels.AddMember("process", rapidjson::Value (g_szProcessEmpty, alloc), alloc);
+    }
+    else
     {
         streamLabels.AddMember("process", rapidjson::Value (pszProcess, alloc), alloc);
     }
@@ -556,6 +586,44 @@ std::string BuildLokiPayload (const std::string& line, const pid_t pid, const ch
 }
 
 
+std::string BuildLogPayload (const std::string& line, const pid_t pid, const char* pszProcess)
+{
+    rapidjson::Document doc;
+    doc.SetObject();
+    auto& alloc = doc.GetAllocator();
+
+    /* ---- timestamp (unix nanoseconds) ---- */
+    uint64_t ts = GetEpochNanoseconds();
+    doc.AddMember("ts", ts, alloc);
+
+    /* ---- pid ---- */
+    doc.AddMember("pid", static_cast<uint64_t>(pid), alloc);
+
+    /* ---- process ---- */
+    if (IsNullStr(pszProcess))
+    {
+        doc.AddMember ("process", rapidjson::Value(g_szProcessEmpty, alloc), alloc);
+    }
+    else
+    {
+        doc.AddMember ("process", rapidjson::Value(pszProcess, alloc), alloc);
+    }
+
+    /* ---- log line ---- */
+    doc.AddMember ("line", rapidjson::Value(line.c_str(), alloc), alloc);
+
+    /* ---- serialize ---- */
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    doc.Accept (writer);
+
+    /* ---- newline-delimited JSON ---- */
+    buffer.Put ('\n');
+
+    return buffer.GetString();
+}
+
+
 bool GetHostname (size_t MaxSize, char * retpszHostname)
 {
     if (0 != gethostname (retpszHostname, MaxSize-1))
@@ -573,7 +641,7 @@ bool SendPayloadToWAL (const std::string& payload)
 }
 
 
-bool SendAlloyPayload (CURL* pCurl, const char *pszURL, const char *pg_szLokiPushToken, const char* pszBuffer, size_t BufferLen)
+bool SendLokiPayload (CURL* pCurl, const char *pszURL, const char *pg_szLokiPushToken, const char* pszBuffer, size_t BufferLen)
 {
     bool bSuccess = false;
     char szErrorBuffer[CURL_ERROR_SIZE+10] = {0};
@@ -671,29 +739,29 @@ void *PushThread (void *arg)
     {
         while (g_LogFifo.pop (line))
         {
-            std::string processName;
+            g_Metric_LogLines.fetch_add (1, std::memory_order_relaxed);
 
+            std::string processName;
             pid = ExtractProcessId (line);
 
             GetProcessName (pidMap, pid, processName);
-            std::string payload = BuildLokiPayload (line, pid, processName.c_str());
-
-            g_Metric_LogLines.fetch_add (1, std::memory_order_relaxed);
 
             if (*g_szLokiPushApiURL)
             {
+                std::string jLokiPayload = BuildLokiPayload (line, pid, processName.c_str());
+
                 /* WAL-TESTING can be used to test WAL logic */
-                if (payload.find ("WAL-TESTING") != std::string::npos)
+                if (jLokiPayload.find ("WAL-TESTING") != std::string::npos)
                 {
                     LogMessage ("WAL-TESTING string received");
-                    SendPayloadToWAL (payload);
+                    SendPayloadToWAL (jLokiPayload);
                 }
                 else
                 {
-                    if (false == SendAlloyPayload (pCurl, g_szLokiPushApiURL, g_szLokiPushToken, payload.c_str(), payload.size()))
+                    if (false == SendLokiPayload (pCurl, g_szLokiPushApiURL, g_szLokiPushToken, jLokiPayload.c_str(), jLokiPayload.size()))
                     {
                         g_Metric_PushErrors.fetch_add (1, std::memory_order_relaxed);;
-                        SendPayloadToWAL (payload);
+                        SendPayloadToWAL (jLokiPayload);
                     }
                     else
                     {
@@ -702,14 +770,28 @@ void *PushThread (void *arg)
                 }
             }
 
-            if (g_Annotate2Stdout)
+            /* Write to annotation file and/or stdout */
+            if ( g_Annotate2Stdout || (g_fdAnnotationLogFile >= 0) )
             {
-                payload.push_back ((char) '\n');
-                nread = payload.size();
-                nwritten = write (g_fdStdOut, payload.data(), nread);
-                if (nread != nwritten)
+                std::string jLogPayload = BuildLogPayload (line, pid, processName.c_str());
+                nread = jLogPayload.size();
+
+                if (g_Annotate2Stdout)
                 {
-                    /* LATER: Should we log this error and where ... ? */
+                    nwritten = write (g_fdStdOut, jLogPayload.data(), nread);
+                    if (nread != nwritten)
+                    {
+                        /* LATER: Should we log this error and where ... ? */
+                    }
+                }
+
+                if (g_fdAnnotationLogFile >= 0)
+                {
+                    nwritten = write (g_fdAnnotationLogFile, jLogPayload.data(), nread);
+                    if (nread != nwritten)
+                    {
+                        /* LATER: Should we log this error and where ... ? */
+                    }
                 }
             }
         }
@@ -750,7 +832,7 @@ bool PushWalEntries ()
 
     bSuccess = g_Wal.Replay ([pCurl] (const std::vector<uint8_t>& Record)
     {
-        if (SendAlloyPayload (pCurl, g_szLokiPushApiURL, g_szLokiPushToken, (const char *) Record.data(), Record.size()))
+        if (SendLokiPayload (pCurl, g_szLokiPushApiURL, g_szLokiPushToken, (const char *) Record.data(), Record.size()))
         {
             g_Metric_PushRetrySuccess.fetch_add (1, std::memory_order_relaxed);;
             return true;
@@ -966,21 +1048,150 @@ size_t GetEnvironmentValue (const char *pszEnvironmentName)
 }
 
 
-int main()
+void PrintBanner()
 {
-    char szWalFile[2048] = {0};
+    fprintf (stderr, "\nDomino Log Forwarder %s - %s %s\n\n", g_szVersion, g_szCopyright, g_szGitHubURL);
+}
+
+
+void LogHelpEnv (const char *pszParameter, const char *pszDescription)
+{
+    if (IsNullStr (pszParameter))
+        return;
+
+    if (IsNullStr (pszDescription))
+        return;
+
+    printf ("%-24s  %s\n", pszParameter, pszDescription);
+}
+
+void LogHelpCmd (const char *pszCmd, const char *pszDescription)
+{
+    if (IsNullStr (pszCmd))
+        return;
+
+    if (IsNullStr (pszDescription))
+        return;
+
+    printf ("%-24s  %s\n", pszCmd, pszDescription);
+}
+
+
+void PrintHelp ()
+{
+    printf ("\n");
+    printf ("Domino Log Forwarder\n");
+    printf ("--------------------\n");
+    printf ("\n");
+    printf ("Environment Variables:\n");
+    printf ("\n");
+
+    LogHelpEnv (g_szEnvLokiPushApiUrl,   "Loki Push URL for Loki Server (example: https://loki.example.com:3101/loki/api/v1/push");
+    LogHelpEnv (g_szEnvLokiPushToken,    "Loki Push Token for Loki Server");
+    LogHelpEnv (g_szEnvLokiCaFile,       "Loki Trusted Root CA File");
+    LogHelpEnv (g_szEnvLokiJob,          "Loki Job Name (default: hostname)");
+    LogHelpEnv (g_szEnvDominoOutputLog,  "Domino Output log file name");
+    LogHelpEnv (g_szEnvLogLevel,         "Log level for stdout logging");
+    LogHelpEnv (g_szEnvMirrorToStdout,   "Mirror stdin to stdout");
+    LogHelpEnv (g_szEnvAnnotateToStdout, "Write annotated logs to stdout");
+    LogHelpEnv (g_szEnvAnnotateLogfile,  "Write annotated logs to log file");
+    LogHelpEnv (g_szEnvPromFile,         "Prom File for Metrics output (default: <notesdata>/domino/stats/domfwd.prom)");
+    LogHelpEnv (g_szEnvHostname,         "Hostname to use (default: hostname read from OS)");
+
+    printf ("\n");
+    printf ("Command Line :\n");
+    printf ("\n");
+    LogHelpCmd ("-cfg",        "Print configuration");
+    LogHelpCmd ("-env",        "Print environment variable config");
+    LogHelpCmd ("-help/-h/-?", "Print print help");
+    printf ("\n");
+}
+
+
+void LogCfgText (bool bShowEnvVars, const char *pszDescription, const char *pszValue, const char *pszParameter = "")
+{
+
+    if (IsNullStr (pszDescription))
+        return;
+
+    if (NULL == (pszValue))
+        return;
+
+    if (bShowEnvVars)
+    {
+        if (IsNullStr (pszParameter))
+            return;
+
+        printf ("%-24s :  %s\n", pszParameter, pszValue);
+    }
+    else
+    {
+        printf ("%-20s :  %s\n", pszDescription, pszValue);
+    }
+}
+
+
+void LogCfgNum (bool bShowEnvVars, const char *pszDescription, size_t Value, const char *pszParameter = "")
+{
+    if (IsNullStr (pszDescription))
+        return;
+
+    if (bShowEnvVars)
+    {
+        if (IsNullStr (pszParameter))
+            return;
+
+        printf ("%-24s :  %lu\n", pszParameter, Value);
+    }
+    else
+    {
+        printf ("%-20s :  %lu\n", pszDescription, Value);
+    }
+}
+
+
+void DumpConfig (bool bShowEnvVars = false)
+{
+    printf ("\n");
+    printf ("Domino Log Forwarder Configuration\n");
+    printf ("----------------------------------\n");
+    printf ("\n");
+
+    LogCfgNum  (bShowEnvVars, "LogLevel",            g_LogLevel,           g_szEnvLogLevel);
+    LogCfgNum  (bShowEnvVars, "Mirror to stout",     g_Mirror2Stdout,      g_szEnvMirrorToStdout);
+    LogCfgNum  (bShowEnvVars, "Annotate to stdout",  g_Annotate2Stdout,    g_szEnvAnnotateToStdout);
+    LogCfgText (bShowEnvVars, "Annotate Log file",   g_szAnnotateLogfile,  g_szEnvAnnotateLogfile);
+    LogCfgText (bShowEnvVars, "Notes Data Dir",      g_szNotesDataDir,     g_szEnvDominoDataPath);
+    LogCfgText (bShowEnvVars, "Domino Output log",   g_szOutputLogFile,    g_szEnvDominoOutputLog);
+    LogCfgText (bShowEnvVars, "Metrics File",        g_szMetricsFileName,  g_szEnvPromFile);
+    LogCfgText (bShowEnvVars, "Hostname",            g_szHostname,         g_szEnvHostname);
+    LogCfgText (bShowEnvVars, "Loki Job",            g_szJob,              g_szEnvLokiJob);
+    LogCfgText (bShowEnvVars, "Loki Push API URL",   g_szLokiPushApiURL,   g_szEnvLokiPushApiUrl);
+    LogCfgText (bShowEnvVars, "Loki Push Token",     g_szLokiPushToken,    g_szEnvLokiPushToken);
+    LogCfgText (bShowEnvVars, "Loki CA File",        g_szLokiCaFile,       g_szEnvLokiCaFile);
+    LogCfgText (bShowEnvVars, "WAL File",            g_szWalFile);
+
+    printf ("\n");
+}
+
+
+int main (int argc, char *argv[])
+{
+    int a   = 0;
     char *p = NULL;
+    char *pParam = NULL;
 
     char    *pLine       = NULL;
     size_t  CountSeconds = 0;
     size_t  len          = 0;
+    size_t  seconds      = 0;
     ssize_t nread        = 0;
     ssize_t nwritten     = 0;
 
     struct sigaction sa {};
 
     sa.sa_handler = handle_signal;
-    sigemptyset(&sa.sa_mask);
+    sigemptyset (&sa.sa_mask);
     sa.sa_flags = 0;
 
     sigaction (SIGINT,  &sa, NULL);
@@ -989,15 +1200,15 @@ int main()
 
     snprintf (g_szVersion, sizeof (g_szVersion), "%d.%d.%d", DOMFWD_VERSION_MAJOR, DOMFWD_VERSION_MINOR, DOMFWD_VERSION_PATCH);
 
-    g_LogLevel        = GetEnvironmentValue ("DOMFWD_LOGLEVEL");
-    g_Mirror2Stdout   = GetEnvironmentValue ("DOMFWD_MIRROR_STDOUT");
-    g_Annotate2Stdout = GetEnvironmentValue ("DOMFWD_ANNOTATE_STDOUT");
+    /* Read configuration */
 
-    p = getenv ("DOMINO_DATA_PATH");
+    g_LogLevel        = GetEnvironmentValue (g_szEnvLogLevel);
+    g_Mirror2Stdout   = GetEnvironmentValue (g_szEnvMirrorToStdout);
+    g_Annotate2Stdout = GetEnvironmentValue (g_szEnvAnnotateToStdout);
+
+    p = getenv (g_szEnvDominoDataPath);
     if (p)
-    {
         snprintf (g_szNotesDataDir, sizeof (g_szNotesDataDir), "%s", p);
-    }
 
     if (0 == IsDirectoryWritable (g_szNotesDataDir))
     {
@@ -1005,66 +1216,106 @@ int main()
         goto Done;
     }
 
-    snprintf (szWalFile, sizeof (szWalFile), "%s/nshlog.wal", g_szNotesDataDir);
+    snprintf (g_szWalFile, sizeof (g_szWalFile), "%s/%s.wal", g_szNotesDataDir, g_szTask);
 
-    p = getenv ("DOMFWD_PROM_FILE");
+    p = getenv (g_szEnvAnnotateLogfile);
     if (p)
-    {
+        snprintf (g_szAnnotateLogfile, sizeof (g_szAnnotateLogfile), "%s", p);
+
+    p = getenv (g_szEnvPromFile);
+    if (p)
         snprintf (g_szMetricsFileName, sizeof (g_szMetricsFileName), "%s", p);
-    }
     else
-    {
         snprintf (g_szMetricsFileName, sizeof (g_szMetricsFileName), "%s/domino/stats/domfwd.prom", g_szNotesDataDir);
+
+    p = getenv (g_szEnvHostname);
+    if (p)
+        snprintf (g_szHostname, sizeof (g_szHostname), "%s", p);
+    else
+        GetHostname (sizeof (g_szHostname), g_szHostname);
+
+    p = getenv (g_szEnvLokiJob);
+    if (p)
+        snprintf (g_szJob, sizeof (g_szJob), "%s", p);
+    else
+        snprintf (g_szJob, sizeof (g_szJob), "%s", g_szHostname);
+
+    snprintf (g_szPidNbfFile,  sizeof (g_szPidNbfFile),  "%s/pid.nbf",   g_szNotesDataDir);
+
+    p = getenv (g_szEnvLokiPushToken);
+    if (p)
+        snprintf (g_szLokiPushToken, sizeof (g_szLokiPushToken), "%s", p);
+
+    p = getenv (g_szEnvLokiPushApiUrl);
+    if (p)
+        snprintf (g_szLokiPushApiURL, sizeof (g_szLokiPushApiURL), "%s", p);
+
+    p = getenv (g_szEnvLokiCaFile);
+    if (p)
+        snprintf (g_szLokiCaFile, sizeof (g_szLokiCaFile), "%s", p);
+
+    p = getenv (g_szEnvDominoInputFile);
+    if (p)
+        snprintf (g_szInputLogFile, sizeof (g_szInputLogFile), "%s", p);
+
+    p = getenv (g_szEnvDominoOutputLog);
+    if (p)
+        snprintf (g_szOutputLogFile, sizeof (g_szOutputLogFile), "%s", p);
+
+    for (a=1; a<argc; a++)
+    {
+        pParam = argv[a];
+
+        if ( (0 == strcasecmp (pParam, "--version")) ||
+             (0 == strcasecmp (pParam, "-version")) )
+        {
+            printf ("%s", g_szVersion);
+            goto Done;
+        }
+
+        else if ( (0 == strcasecmp (pParam, "-help")) ||
+             (0 == strcasecmp (pParam, "-h")) ||
+             (0 == strcasecmp (pParam, "-?")) )
+        {
+            PrintHelp();
+            return 0;
+        }
+
+        else if ( (0 == strcasecmp (pParam, "-config")) ||
+             (0 == strcasecmp (pParam, "-cfg")) )
+        {
+            DumpConfig();
+            return 0;
+        }
+
+        else if (0 == strcasecmp (pParam, "-env"))
+        {
+            DumpConfig (true);
+            return 0;
+        }
+
+        else
+        {
+            LogError ("Invalid parameter", pParam);
+            return 1;
+        }
     }
+
+    PrintBanner();
+
+    /* --- No operations before this point because the parameter read loop exits for some parameters */
 
     MakeDirectoryTreeFromFileName (g_szMetricsFileName);
-
-    g_Wal.Init (szWalFile);
-
-    GetHostname (sizeof (g_szHostname), g_szHostname);
-
-    snprintf (g_szJob,         sizeof (g_szJob),         "%s",           g_szHostname);
-    snprintf (g_szPidNbfFile,  sizeof (g_szPidNbfFile),  "%s/pid.nbf",   g_szNotesDataDir);
-    snprintf (g_szLogFilename, sizeof (g_szLogFilename), "%s/notes.log", g_szNotesDataDir);
-
+    g_Wal.Init (g_szWalFile);
     curl_global_init (CURL_GLOBAL_DEFAULT);
 
-    p = getenv ("LOKI_PUSH_TOKEN");
-    if (p)
-    {
-        snprintf (g_szLokiPushToken, sizeof (g_szLokiPushToken), "%s", p);
-    }
-
-    p = getenv ("LOKI_PUSH_API_URL");
-    if (p)
-    {
-        snprintf (g_szLokiPushApiURL, sizeof (g_szLokiPushApiURL), "%s", p);
-    }
-
-    p = getenv ("LOKI_CA_FILE");
-    if (p)
-    {
-        snprintf (g_szLokiCaFile, sizeof (g_szLokiCaFile), "%s", p);
-    }
-
-    p = getenv ("DOMINO_INPUT_FILE");
-    if (p)
-    {
-        snprintf (g_szInputLogFile, sizeof (g_szInputLogFile), "%s", p);
-    }
-
-    p = getenv ("DOMINO_OUTPUT_LOG");
-    if (p)
-    {
-        snprintf (g_szOutputLogFile, sizeof (g_szOutputLogFile), "%s", p);
-    }
-
     if (false == IsNullStr (g_szOutputLogFile))
-    {
         g_fdOutputLogFile = open (g_szOutputLogFile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    }
 
-    fprintf (stderr, "\nDomino Log Forwarder %s - %s %s\n\n", g_szVersion, g_szCopyright, g_szGitHubURL);
+    if (false == IsNullStr (g_szAnnotateLogfile))
+        g_fdAnnotationLogFile = open (g_szAnnotateLogfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+
+    /* Create threads */
 
     if (0 != pthread_create (&g_PushThreadInstance, NULL, PushThread, NULL))
     {
@@ -1085,6 +1336,7 @@ int main()
     }
 
     /* Read from stdin and process the log line (annotating it, writing it to a log, pushing it to Loki, ...) */
+
     while ((nread = getline (&pLine, &len, stdin)) != -1)
     {
         if (nread == 0)
@@ -1122,12 +1374,19 @@ int main()
 
     LogMessage ("Waiting for shutdown to complete");
 
+    seconds = 0;
     while (g_Wal.IsReplayPending())
     {
-        sleep_ms (10);
+        sleep (1);
 
         if (g_ShutdownRequested)
             break;
+
+        if (seconds++ > g_ShutdownMaxWaitSec)
+        {
+            LogMessage ("Shutdown timeout reached");
+            break;
+        }
     }
 
     g_ShutdownRequested = 1;
@@ -1159,6 +1418,12 @@ Done:
     {
         close (g_fdOutputLogFile);
         g_fdOutputLogFile = -1;
+    }
+
+    if (g_fdAnnotationLogFile >= 0)
+    {
+        close (g_fdAnnotationLogFile);
+        g_fdAnnotationLogFile = -1;
     }
 
     if (pLine)
