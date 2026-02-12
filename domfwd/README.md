@@ -31,10 +31,16 @@ In addition to the standard log file logs can be
 
 ### Output related configuration
 
+The following table shows the main configuration.  
+Not all output options should be combined.  
+Please pick only one STDOUT option for example!
+
+
 | Variable Name                | Description                       | Example / Comments                             |
 |:-----------------------------|:----------------------------------|:-----------------------------------------------|
 | **DOMINO_OUTPUT_LOG**        | Domino Output log file name       | /local/notesdata/notes.log                     |
 | **LOKI_PUSH_API_URL**        | Push URL for Loki Server          | https://loki.example.com:3101/loki/api/v1/push |
+| **LOKI_PUSH_TOKEN**          | Push Token for Loki Server        | my-secure-token                                |
 | **DOMFWD_MIRROR_STDOUT**     | Mirror stdin to stdout            | 1                                              |
 | **DOMFWD_ANNOTATE_STDOUT**   | Write JSON formatted Alloy STDOUT | 1                                              |
 | **DOMFWD_ANNOATED_LOG**      | Write JSON formatted Alloy file   | /var/log/domfwd.json                           |
@@ -42,9 +48,10 @@ In addition to the standard log file logs can be
 
 ### Additional configuration
 
+Most of the following parameters are optional.
+
 | Variable Name                | Description                       | Example / Comments                             |
 |:-----------------------------|:----------------------------------|:-----------------------------------------------|
-| **LOKI_PUSH_TOKEN**          | Push Token for Loki Server        | my-secure-token                                |
 | **LOKI_CA_FILE**             | Trusted Root CA File              | /local/notesdata/trusted_root.pem              |
 | **LOKI_JOB**                 | Loki Job Name (default: hostname) |                                                |
 | **DOMFWD_LOGLEVEL**          | Log level for stdout logging      | 1                                              |

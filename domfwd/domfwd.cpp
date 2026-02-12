@@ -179,6 +179,7 @@ size_t g_MetricsThreadRunning  = 0;
 size_t g_LogLevel              = 0;
 size_t g_Mirror2Stdout         = 0;
 size_t g_Annotate2Stdout       = 0;
+size_t g_DumpEnvironment       = 1;
 size_t g_ShutdownMaxWaitSec    = 60;
 
 pthread_t g_WalThreadInstance     = {0};
@@ -814,7 +815,7 @@ Done:
 }
 
 
-bool PushWalEntries ()
+bool PushWalEntries()
 {
     bool bSuccess = false;
     CURL* pCurl = nullptr;
@@ -879,7 +880,7 @@ void *WalThread (void *arg)
             }
         }
 
-        sleep_ms (2);
+        sleep (1);
     }
 
     g_WalThreadRunning = 0;
@@ -1175,6 +1176,33 @@ void DumpConfig (bool bShowEnvVars = false)
 }
 
 
+void WriteEnvironment (int fd, const char* pszHeader)
+{
+    char** ppEnv = environ;
+
+    if (fd < 0)
+        return;
+
+    if (NULL == ppEnv)
+    {
+        return;
+    }
+
+    if (!IsNullStr (pszHeader))
+        dprintf (fd, "\n-----%s-----\n", pszHeader);
+
+    while (*ppEnv)
+    {
+        dprintf (fd, "%s\n", *ppEnv);
+        ppEnv++;
+    }
+
+    if (!IsNullStr(pszHeader))
+        dprintf (fd, "-----%s-----\n\n", pszHeader);
+
+}
+
+
 int main (int argc, char *argv[])
 {
     int a   = 0;
@@ -1310,7 +1338,9 @@ int main (int argc, char *argv[])
     curl_global_init (CURL_GLOBAL_DEFAULT);
 
     if (false == IsNullStr (g_szOutputLogFile))
-        g_fdOutputLogFile = open (g_szOutputLogFile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    {
+        g_fdOutputLogFile = open (g_szOutputLogFile, O_CREAT | O_APPEND | O_WRONLY, 0644);
+    }
 
     if (false == IsNullStr (g_szAnnotateLogfile))
         g_fdAnnotationLogFile = open (g_szAnnotateLogfile, O_CREAT | O_TRUNC | O_WRONLY, 0644);
@@ -1333,6 +1363,12 @@ int main (int argc, char *argv[])
     {
         perror ("pthread_create");
         return EXIT_FAILURE;
+    }
+
+    if (g_Mirror2Stdout)
+    {
+        if (g_DumpEnvironment)
+            WriteEnvironment (g_fdStdOut, "Environment");
     }
 
     /* Read from stdin and process the log line (annotating it, writing it to a log, pushing it to Loki, ...) */
@@ -1401,7 +1437,7 @@ int main (int argc, char *argv[])
                 fprintf (stderr, "Waiting %lu seconds for threads to terminate (Push: %lu, Wal: %lu, Metrics: %lu)\n", CountSeconds, g_PushThreadRunning, g_WalThreadRunning, g_MetricsThreadRunning);
         }
 
-        sleep_ms (1000);
+        sleep (1);
 
         if (CountSeconds > 300)
         {

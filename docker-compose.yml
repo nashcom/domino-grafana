@@ -90,11 +90,14 @@ services:
     image: nginx
     container_name: loki-nginx
     hostname: loki-nginx
-    restart: always
-    stop_grace_period: 15s
+
+    profiles:
+      - loki-nginx
     depends_on:
       - loki
 
+    restart: always
+    stop_grace_period: 15s
     ports:
       - 3101:443
 
