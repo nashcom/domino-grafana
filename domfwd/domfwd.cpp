@@ -1,7 +1,7 @@
 /*
 ###########################################################################
 # Domino Log Forwarder                                                    #
-# Version 0.9.0 09.02.2026                                                #
+# Version 1.0.3 20.02.2026                                                #
 # (C) Copyright Daniel Nashed/Nash!Com 2026                               #
 #                                                                         #
 # Licensed under the Apache License, Version 2.0 (the "License");         #
@@ -23,9 +23,11 @@
 #define DOMFWD_COPYRIGHT  "Copyright Daniel Nashed/Nash!Com 2026"
 #define DOMFWD_GITHUB_URL "https://github.com/nashcom/domino-grafana"
 
-#define DOMFWD_VERSION_MAJOR 0
-#define DOMFWD_VERSION_MINOR 9
-#define DOMFWD_VERSION_PATCH 1
+#define DOMFWD_VERSION_MAJOR 1
+#define DOMFWD_VERSION_MINOR 0
+#define DOMFWD_VERSION_PATCH 3
+
+#define DOMFWD_DEFAULT_SHUTDOWN_MAX_WAIT_SEC 30
 
 #define DOMFWD_VERSION_BUILD (DOMFWD_VERSION_MAJOR * 10000 +  DOMFWD_VERSION_MINOR * 100 + DOMFWD_VERSION_PATCH)
 
@@ -70,9 +72,10 @@
 
 #include "simple_wal.hpp"
 
-
+/* pid.nbf map definition */
 using PidMap = std::unordered_map<pid_t, std::string>;
 
+/* FIFO class used to read text lines from stdin and write them to targets via push thread */
 class string_fifo
 {
 
@@ -125,24 +128,27 @@ private:
     bool m_bShutdown = false;
 };
 
-/* Environment Variables */
 
-char g_szEnvLokiPushApiUrl[]   = "LOKI_PUSH_API_URL";
-char g_szEnvLokiPushToken[]    = "LOKI_PUSH_TOKEN";
-char g_szEnvLokiCaFile[]       = "LOKI_CA_FILE";
-char g_szEnvLokiJob[]          = "LOKI_JOB";
-char g_szEnvDominoDataPath[]   = "DOMINO_DATA_PATH";
-char g_szEnvDominoOutputLog[]  = "DOMINO_OUTPUT_LOG";
-char g_szEnvDominoInputFile[]  = "DOMINO_INPUT_FILE";
-char g_szEnvLogLevel[]         = "DOMFWD_LOGLEVEL";
-char g_szEnvMirrorToStdout[]   = "DOMFWD_MIRROR_STDOUT";
-char g_szEnvAnnotateToStdout[] = "DOMFWD_ANNOTATE_STDOUT";
-char g_szEnvAnnotateLogfile[]  = "DOMFWD_ANNOATED_LOG";
-char g_szEnvPromFile[]         = "DOMFWD_PROM_FILE";
-char g_szEnvHostname[]         = "DOMFWD_HOSTNAME";
+/* Environment Variables */
+char g_szEnvDominoDataPath[]     = "DOMINO_DATA_PATH";
+char g_szEnvDominoOutputLog[]    = "DOMINO_OUTPUT_LOG";
+char g_szEnvDominoInputFile[]    = "DOMINO_INPUT_FILE";
+char g_szEnvLogLevel[]           = "DOMFWD_LOGLEVEL";
+char g_szEnvMirrorToStdout[]     = "DOMFWD_MIRROR_STDOUT";
+char g_szEnvAnnotateToStdout[]   = "DOMFWD_ANNOTATE_STDOUT";
+char g_szEnvAnnotateLogfile[]    = "DOMFWD_ANNOATED_LOG";
+char g_szEnvPromFile[]           = "DOMFWD_PROM_FILE";
+char g_szEnvHostname[]           = "DOMFWD_HOSTNAME";
+char g_szEnvShutdownMaxSec[]     = "DOMFWD_SHUTDOW_MAX_SEC";
+char g_szEnvLokiPushApiUrl[]     = "LOKI_PUSH_API_URL";
+char g_szEnvLokiPushToken[]      = "LOKI_PUSH_TOKEN";
+char g_szEnvLokiCaFile[]         = "LOKI_CA_FILE";
+char g_szEnvLokiJob[]            = "LOKI_JOB";
+char g_szEnvLokiNamespace[]      = "LOKI_NAMESPACE";
+char g_szEnvLokiPod[]            = "LOKI_POD";
+
 
 /* Globals */
-
 char g_szHostname[1024]        = {0};
 char g_szJob[1024]             = {0};
 char g_szPidNbfFile[2048]      = {0};
@@ -157,8 +163,9 @@ char g_szMetricsFileName[2048] = {0};
 
 char g_szNotesDataDir[1024]    = "/local/notesdata";
 char g_szNamespace[1024]       = "domino";
-char g_szPod[1024]             = "newton.nashcom.de";
+char g_szPod[1024]             = "";
 
+/* Static string definitions */
 char g_szVersion[40]           = {0};
 char g_szCopyright[]           = DOMFWD_COPYRIGHT;
 char g_szGitHubURL[]           = DOMFWD_GITHUB_URL;
@@ -171,6 +178,7 @@ char  g_szPromPrefix[]         = "domfwd";
 char  g_szEmpty[]              = "";
 char  g_szProcessEmpty[]       = "unknown";
 
+/* Options to enable functionality */
 size_t g_ShutdownRequested     = 0;
 size_t g_ReloadRequested       = 0;
 size_t g_PushThreadRunning     = 0;
@@ -180,29 +188,38 @@ size_t g_LogLevel              = 0;
 size_t g_Mirror2Stdout         = 0;
 size_t g_Annotate2Stdout       = 0;
 size_t g_DumpEnvironment       = 1;
-size_t g_ShutdownMaxWaitSec    = 60;
+size_t g_ShutdownMaxWaitSec    = DOMFWD_DEFAULT_SHUTDOWN_MAX_WAIT_SEC;
 
+/* Thread status */
 pthread_t g_WalThreadInstance     = {0};
 pthread_t g_PushThreadInstance    = {0};
 pthread_t g_MetricsThreadInstance = {0};
 
+/* Process start time */
 time_t g_tStartTime = time (NULL);
 
+/* Log files */
 int g_fdOutputLogFile     = -1;
 int g_fdAnnotationLogFile = -1;
 int g_fdStdOut = fileno (stdout);
 
+/* Stat for pid.nbf update detection */
 struct stat g_PidNbfStat {};
+
+/* FIFO instance */
 string_fifo g_LogFifo;
 
+/* WAL implementation */
 SimpleWAL g_Wal;
 
+/* Statistic counters */
 std::atomic<std::int64_t> g_Metric_LogLines         {0};
 std::atomic<std::int64_t> g_Metric_PushSuccess      {0};
 std::atomic<std::int64_t> g_Metric_PushErrors       {0};
 std::atomic<std::int64_t> g_Metric_PushRetrySuccess {0};
 std::atomic<std::int64_t> g_Metric_PushRetryErrors  {0};
 
+/* Helper functions */
 
 bool IsNullStr (const char *pszStr)
 {
@@ -1087,24 +1104,32 @@ void PrintHelp ()
     printf ("Environment Variables:\n");
     printf ("\n");
 
-    LogHelpEnv (g_szEnvLokiPushApiUrl,   "Loki Push URL for Loki Server (example: https://loki.example.com:3101/loki/api/v1/push");
-    LogHelpEnv (g_szEnvLokiPushToken,    "Loki Push Token for Loki Server");
-    LogHelpEnv (g_szEnvLokiCaFile,       "Loki Trusted Root CA File");
-    LogHelpEnv (g_szEnvLokiJob,          "Loki Job Name (default: hostname)");
-    LogHelpEnv (g_szEnvDominoOutputLog,  "Domino Output log file name");
-    LogHelpEnv (g_szEnvLogLevel,         "Log level for stdout logging");
-    LogHelpEnv (g_szEnvMirrorToStdout,   "Mirror stdin to stdout");
-    LogHelpEnv (g_szEnvAnnotateToStdout, "Write annotated logs to stdout");
-    LogHelpEnv (g_szEnvAnnotateLogfile,  "Write annotated logs to log file");
-    LogHelpEnv (g_szEnvPromFile,         "Prom File for Metrics output (default: <notesdata>/domino/stats/domfwd.prom)");
-    LogHelpEnv (g_szEnvHostname,         "Hostname to use (default: hostname read from OS)");
+    LogHelpEnv (g_szEnvMirrorToStdout,     "Mirror stdin to stdout");
+    LogHelpEnv (g_szEnvAnnotateToStdout,   "Write annotated logs to stdout");
+    LogHelpEnv (g_szEnvShutdownMaxSec,     "Shutdown max wait seconds (default: 30 sec)");
+    LogHelpEnv (g_szEnvAnnotateLogfile,    "Write annotated logs to log file");
+    LogHelpEnv (g_szEnvDominoOutputLog,    "Domino Output log file name");
+    LogHelpEnv (g_szEnvPromFile,           "Prom File for Metrics output (default: <notesdata>/domino/stats/domfwd.prom)");
+    LogHelpEnv (g_szEnvHostname,           "Hostname to use (default: hostname read from OS)");
+    LogHelpEnv (g_szEnvLogLevel,           "Log level for stdout logging");
+
+    printf ("\n");
+
+    LogHelpEnv (g_szEnvLokiPod,            "Loki Pod name  to use for push labeling (default: hostname read from OS)");
+    LogHelpEnv (g_szEnvLokiNamespace,      "Loki Namespace to use for push labeling (default: domino)");
+    LogHelpEnv (g_szEnvLokiPushApiUrl,     "Loki Push URL for Loki Server (example: https://loki.example.com:3101/loki/api/v1/push");
+    LogHelpEnv (g_szEnvLokiPushToken,      "Loki Push Token for Loki Server");
+    LogHelpEnv (g_szEnvLokiCaFile,         "Loki Trusted Root CA File");
+    LogHelpEnv (g_szEnvLokiJob,            "Loki Job Name (default: hostname)");
 
     printf ("\n");
     printf ("Command Line :\n");
     printf ("\n");
+
     LogHelpCmd ("-cfg",        "Print configuration");
     LogHelpCmd ("-env",        "Print environment variable config");
     LogHelpCmd ("-help/-h/-?", "Print print help");
+
     printf ("\n");
 }
 
@@ -1158,19 +1183,28 @@ void DumpConfig (bool bShowEnvVars = false)
     printf ("----------------------------------\n");
     printf ("\n");
 
-    LogCfgNum  (bShowEnvVars, "LogLevel",            g_LogLevel,           g_szEnvLogLevel);
-    LogCfgNum  (bShowEnvVars, "Mirror to stout",     g_Mirror2Stdout,      g_szEnvMirrorToStdout);
-    LogCfgNum  (bShowEnvVars, "Annotate to stdout",  g_Annotate2Stdout,    g_szEnvAnnotateToStdout);
-    LogCfgText (bShowEnvVars, "Annotate Log file",   g_szAnnotateLogfile,  g_szEnvAnnotateLogfile);
-    LogCfgText (bShowEnvVars, "Notes Data Dir",      g_szNotesDataDir,     g_szEnvDominoDataPath);
-    LogCfgText (bShowEnvVars, "Domino Output log",   g_szOutputLogFile,    g_szEnvDominoOutputLog);
-    LogCfgText (bShowEnvVars, "Metrics File",        g_szMetricsFileName,  g_szEnvPromFile);
-    LogCfgText (bShowEnvVars, "Hostname",            g_szHostname,         g_szEnvHostname);
-    LogCfgText (bShowEnvVars, "Loki Job",            g_szJob,              g_szEnvLokiJob);
-    LogCfgText (bShowEnvVars, "Loki Push API URL",   g_szLokiPushApiURL,   g_szEnvLokiPushApiUrl);
-    LogCfgText (bShowEnvVars, "Loki Push Token",     g_szLokiPushToken,    g_szEnvLokiPushToken);
-    LogCfgText (bShowEnvVars, "Loki CA File",        g_szLokiCaFile,       g_szEnvLokiCaFile);
-    LogCfgText (bShowEnvVars, "WAL File",            g_szWalFile);
+    LogCfgNum  (bShowEnvVars, "Mirror to stout",         g_Mirror2Stdout,      g_szEnvMirrorToStdout);
+    LogCfgNum  (bShowEnvVars, "Annotate to stdout",      g_Annotate2Stdout,    g_szEnvAnnotateToStdout);
+    LogCfgNum  (bShowEnvVars, "Shutdown max wait sec",   g_ShutdownMaxWaitSec, g_szEnvShutdownMaxSec);
+    LogCfgText (bShowEnvVars, "Annotate Log file",       g_szAnnotateLogfile,  g_szEnvAnnotateLogfile);
+
+    printf ("\n");
+
+    LogCfgText (bShowEnvVars, "Notes Data Dir",          g_szNotesDataDir,     g_szEnvDominoDataPath);
+    LogCfgText (bShowEnvVars, "Domino Output log",       g_szOutputLogFile,    g_szEnvDominoOutputLog);
+    LogCfgText (bShowEnvVars, "Metrics File",            g_szMetricsFileName,  g_szEnvPromFile);
+    LogCfgText (bShowEnvVars, "Hostname",                g_szHostname,         g_szEnvHostname);
+    LogCfgNum  (bShowEnvVars, "LogLevel",                g_LogLevel,           g_szEnvLogLevel);
+
+    printf ("\n");
+
+    LogCfgText (bShowEnvVars, "Loki Pod name  for push", g_szPod,              g_szEnvLokiPod);
+    LogCfgText (bShowEnvVars, "Loki Namespace for push", g_szNamespace,        g_szEnvLokiNamespace);
+    LogCfgText (bShowEnvVars, "Loki Job",                g_szJob,              g_szEnvLokiJob);
+    LogCfgText (bShowEnvVars, "Loki Push API URL",       g_szLokiPushApiURL,   g_szEnvLokiPushApiUrl);
+    LogCfgText (bShowEnvVars, "Loki Push Token",         g_szLokiPushToken,    g_szEnvLokiPushToken);
+    LogCfgText (bShowEnvVars, "Loki CA File",            g_szLokiCaFile,       g_szEnvLokiCaFile);
+    LogCfgText (bShowEnvVars, "WAL File",                g_szWalFile);
 
     printf ("\n");
 }
@@ -1230,9 +1264,13 @@ int main (int argc, char *argv[])
 
     /* Read configuration */
 
-    g_LogLevel        = GetEnvironmentValue (g_szEnvLogLevel);
-    g_Mirror2Stdout   = GetEnvironmentValue (g_szEnvMirrorToStdout);
-    g_Annotate2Stdout = GetEnvironmentValue (g_szEnvAnnotateToStdout);
+    g_LogLevel           = GetEnvironmentValue (g_szEnvLogLevel);
+    g_Mirror2Stdout      = GetEnvironmentValue (g_szEnvMirrorToStdout);
+    g_Annotate2Stdout    = GetEnvironmentValue (g_szEnvAnnotateToStdout);
+    g_ShutdownMaxWaitSec = GetEnvironmentValue (g_szEnvShutdownMaxSec);
+
+    if (0 == g_ShutdownMaxWaitSec)
+        g_ShutdownMaxWaitSec = DOMFWD_DEFAULT_SHUTDOWN_MAX_WAIT_SEC;
 
     p = getenv (g_szEnvDominoDataPath);
     if (p)
@@ -1261,6 +1299,16 @@ int main (int argc, char *argv[])
         snprintf (g_szHostname, sizeof (g_szHostname), "%s", p);
     else
         GetHostname (sizeof (g_szHostname), g_szHostname);
+
+    p = getenv (g_szEnvLokiPod);
+    if (p)
+        snprintf (g_szPod, sizeof (g_szPod), "%s", p);
+    else
+        snprintf (g_szPod, sizeof (g_szPod), "%s", g_szHostname);
+
+    p = getenv (g_szEnvLokiNamespace);
+    if (p)
+        snprintf (g_szNamespace, sizeof (g_szNamespace), "%s", p);
 
     p = getenv (g_szEnvLokiJob);
     if (p)
@@ -1404,12 +1452,12 @@ int main (int argc, char *argv[])
 
         g_LogFifo.push (pLine);
 
-    } /* while */
+    } /* while read from STDIN */
 
     sleep (2);
-
     LogMessage ("Waiting for shutdown to complete");
 
+    /* Wait until pending entries have been processed */
     seconds = 0;
     while (g_Wal.IsReplayPending())
     {

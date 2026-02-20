@@ -1,5 +1,6 @@
 CXX      = g++
-CXXFLAGS = -O2 -Wall -pedantic -static
+CXXFLAGS = -O2 -Wall -pedantic -flto
+LDFLAGS  = -static -flto
 LDLIBS   = $(shell pkg-config --static --libs libcurl)
 
 TARGET = domfwd
@@ -8,7 +9,7 @@ OBJS   = domfwd.o simple_wal.o
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CXX) $(CXXFLAGS) -o $@ $(OBJS) $(LDLIBS)
+	$(CXX) $(LDFLAGS) -o $@ $(OBJS) $(LDLIBS)
 
 domfwd.o: domfwd.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@

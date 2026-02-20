@@ -1,7 +1,7 @@
 /*
 ###########################################################################
 # Domino Prometheus Exporter                                              #
-# Version 1.0.3 06.02.2026                                                #
+# Version 1.0.3 20.02.2026                                                #
 # (C) Copyright Daniel Nashed/Nash!Com 2024-2026                          #
 #                                                                         #
 # Licensed under the Apache License, Version 2.0 (the "License");         #
