@@ -1,7 +1,7 @@
 /*
 ###########################################################################
 # Domino Prometheus Exporter                                              #
-# Version 1.0.3 20.02.2026                                                #
+# Version 1.0.4 20.03.2026                                                #
 # (C) Copyright Daniel Nashed/Nash!Com 2024-2026                          #
 #                                                                         #
 # Licensed under the Apache License, Version 2.0 (the "License");         #
@@ -26,7 +26,7 @@
 
 #define DOMPROM_VERSION_MAJOR 1
 #define DOMPROM_VERSION_MINOR 0
-#define DOMPROM_VERSION_PATCH 3
+#define DOMPROM_VERSION_PATCH 4
 
 #define DOMPROM_VERSION_BUILD (DOMPROM_VERSION_MAJOR * 10000 +  DOMPROM_VERSION_MINOR * 100 + DOMPROM_VERSION_PATCH)
 
@@ -46,6 +46,9 @@
 #define ENV_DOMPROM_MAINTENANCE_START "domprom_maintenance_start"
 #define ENV_DOMPROM_MAINTENANCE_END   "domprom_maintenance_end"
 
+/* OS Level stats directory for container images */
+#define OSENV_DOMPROM_STATS_DIR       "DOMINO_PROM_STATS_DIR"
+
 #define DOMPROM_DEFAULT_INTERVAL_SEC          60
 #define DOMPROM_DEFAULT_TRANS_INTERVAL_SEC   180
 #define DOMPROM_DEFAULT_IOSTAT_INTERVAL_SEC  600
@@ -62,6 +65,11 @@
 #define DOMPROM_DISK_COMPONENT_NOTES_TEMP    "NotesTemp"
 #define DOMPROM_DISK_COMPONENT_VIEW_REBUILD  "ViewRebuild"
 #define DOMPROM_DISK_COMPONENT_NOTES_LOG_DIR "NotesLogDir"
+
+#define SERVER_STATE_AVAILABLE     0
+#define SERVER_STATE_RESTRICTED    1 // Restricted
+#define SERVER_STATE_UNAVAILABLE   2 // Busy
+#define SERVER_STATE_NOT_REACHABLE 3 // Not reachable (Likely down)
 
 #define MAX_STAT_DESC  2048
 #define MAX_STAT_NAME   120
@@ -88,7 +96,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
-
+#include <stdint.h>
 
 #include <global.h>
 #include <addin.h>
@@ -99,6 +107,7 @@
 #include <miscerr.h>
 #include <mq.h>
 #include <nsfdb.h>
+#include <ns.h>
 #include <nsfnote.h>
 #include <nsfsearc.h>
 #include <osenv.h>
@@ -107,6 +116,7 @@
 #include <osmem.h>
 #include <osmisc.h>
 #include <ostime.h>
+#include <srverr.h>
 #include <stats.h>
 #include <stdnames.h>
 
@@ -215,6 +225,7 @@ WORD  g_wLogLevel           = 0;
 DWORD g_dwIntervalSec       = DOMPROM_DEFAULT_INTERVAL_SEC;
 DWORD g_dwTransIntervalSec  = DOMPROM_DEFAULT_TRANS_INTERVAL_SEC;
 DWORD g_dwIOStatIntervalSec = DOMPROM_DEFAULT_IOSTAT_INTERVAL_SEC;
+DWORD g_dwDAOSCatalogStatus = 0;
 
 /* Helper list to process disk stats and write them separately (Totals and Free) */
 
@@ -224,7 +235,7 @@ std::list<std::string> g_ListDiskFreeStats;
 /* Helper list to process transactions and write them separately (count and total) */
 
 std::list<std::string> g_ListTransCountStats;
-std::list<std::string> g_ListTransTotalMsStats;
+std::list<std::string> g_ListTransTotalSecondsStats;
 
 /* Currently the value is unused. But on purpose this is a map which can later hold values as well */
 
@@ -972,6 +983,36 @@ bool WriteStatsEntryToFile (FILE *fp, const char *pszPrefix, const char *pszStat
 }
 
 
+static bool WriteStatsEntryToFileDouble (FILE *fp, const char *pszPrefix, const char *pszStatName, const char *pszDescription, double dValue)
+{
+    if (NULL == fp)
+        return false;
+    if (NULL == pszPrefix)
+        return false;
+    if (NULL == pszStatName)
+        return false;
+
+    if (false == WriteHelpAndType (fp, pszPrefix, pszStatName, NULL, pszDescription))
+        return false;
+
+    fprintf (fp, "%s_%s %.3f\n", pszPrefix, pszStatName, dValue);
+
+    return true;
+}
+
+static bool WriteStatsEntryToFileMSecToSeconds (FILE *fp, const char *pszPrefix, const char *pszStatName, const char *pszDescription, DWORD dwValue)
+{
+    if (NULL == fp)
+        return false;
+    if (NULL == pszPrefix)
+        return false;
+    if (NULL == pszStatName)
+        return false;
+
+    return WriteStatsEntryToFileDouble (fp, pszPrefix, pszStatName, pszDescription, (double)dwValue / 1000.0);
+}
+
+
 bool WriteStatsEntryToFile (FILE *fp, const char *pszPrefix, const char *pszStatName, const char *pszDescription, const char *pszValueString)
 {
     if (NULL == fp)
@@ -1114,7 +1155,6 @@ Done:
 }
 
 
-
 void SanitizeHelpString(char *pszText)
 {
     char *pchRead  = NULL;
@@ -1246,6 +1286,93 @@ Done:
 
 }
 
+#ifdef _WIN32
+static uint64_t TickMs(void)
+{
+    LARGE_INTEGER liFreq = {0};
+    LARGE_INTEGER liCtr  = {0};
+
+    if (QueryPerformanceFrequency(&liFreq) && liFreq.QuadPart != 0 &&
+        QueryPerformanceCounter(&liCtr))
+    {
+        return (uint64_t)((liCtr.QuadPart * 1000ULL) / liFreq.QuadPart);
+    }
+    return (uint64_t)GetTickCount64();
+}
+#else  /* UNIX / Linux */
+static uint64_t TickMs(void)
+{
+    struct timespec tsNow = {0};
+
+    clock_gettime(CLOCK_MONOTONIC, &tsNow);
+    return (uint64_t)((uint64_t)tsNow.tv_sec * 1000ULL +
+                   (uint64_t)tsNow.tv_nsec / 1000000ULL);
+}
+#endif
+
+
+STATUS GetServerResponseTimeMsec(const char *pszServerName, DWORD *retpdwMsec)
+{
+    STATUS   error       = NOERROR;
+    DBHANDLE hDb         = NULLHANDLE;
+    uint64_t    qwTickStart = 0;
+    uint64_t    qwTickEnd   = 0;
+    char     szFullDbPath [MAXPATH + 1] = {0};
+
+    if (retpdwMsec)
+        *retpdwMsec = 0;
+
+    error = OSPathNetConstruct(NULL, (pszServerName)? pszServerName : "", "names.nsf", szFullDbPath);
+
+    if (error)
+        goto Done;
+
+    qwTickStart = TickMs();
+    error = NSFDbOpen(szFullDbPath, &hDb);
+    qwTickEnd = TickMs();
+
+    if (error)
+        goto Done;
+
+    if (retpdwMsec)
+        *retpdwMsec = (DWORD)(qwTickEnd - qwTickStart);
+
+Done:
+    if (hDb)
+        NSFDbClose(hDb);
+
+    hDb = NULLHANDLE;
+
+    return error;
+}
+
+
+STATUS GetServerPingLatency (const char *pszServerName, DWORD *retpdwMsec)
+{
+    STATUS error    = NOERROR;
+    DWORD  dwMsec   = 0;
+
+    if (retpdwMsec)
+        *retpdwMsec = 0;
+
+    if (IsNullStr (pszServerName))
+    {
+        return ERR_MISC_INVALID_ARGS;
+    }
+
+    error = NSPingServer((char *) pszServerName, &dwMsec, NULL);
+
+    if (error)
+        goto Done;
+
+    if (retpdwMsec)
+        *retpdwMsec = dwMsec;
+
+Done:
+
+    return error;
+}
+
 
 STATUS ReadStatisticsInfoFromEvents4()
 {
@@ -1299,7 +1426,6 @@ Done:
 
     return error;
 }
-
 
 
 STATUS LNCALLBACK DomExportTraverse (void *pContext, char *pszFacility, char *pszStatName, WORD wValueType, void *pValue)
@@ -1611,8 +1737,11 @@ STATUS ProcessDaosStats (FILE *fp)
         StatUpdateNumber (g_szDominoHealth, "DAOS.Catalog.Status", CatalogStatus);
     }
 
-    WriteStatsEntryToFile (fp, g_szDominoHealth, "daos_status",         "Domino DAOS enabled", g_StatusDAOS);
-    WriteStatsEntryToFile (fp, g_szDominoHealth, "daos_catalog_status", "Domino DAOS Catalog status (0 = in sync)", g_CatalogInSyncDAOS);
+    WriteStatsEntryToFile (fp, g_szDominoHealth, "daos_status",             "Domino DAOS enabled", g_StatusDAOS);
+    WriteStatsEntryToFile (fp, g_szDominoHealth, "daos_catalog_not_synced", "Domino DAOS Catalog status (0 = in sync)", g_CatalogInSyncDAOS);
+
+    if (g_StatusDAOS)
+        WriteStatsEntryToFile (fp, g_szDominoHealth, "daos_catalog_status", "DAOS Catalog status (0=Unavailable, 1=Synced, 2=Needs Resync, 3=Resyncing, 4=Readonly, 5=Rebuilding)", g_dwDAOSCatalogStatus);
 
     return NOERROR;
 }
@@ -1973,16 +2102,16 @@ bool AddTransactionStats (const char *pszMetricPrefix, const char *pszOp, int Co
 
     AddUnique (g_ListTransCountStats, szBuffer);
 
-    // total_ms
+    // total_seconds
     snprintf(
         szBuffer,
         sizeof(szBuffer),
-        "%s_total_ms{op=\"%s\"} %d",
+        "%s_total_seconds{op=\"%s\"} %.3f",
         pszMetricPrefix,
         pszOp,
-        TotalMs);
+        (double)TotalMs / 1000.0);
 
-    AddUnique (g_ListTransTotalMsStats, szBuffer);
+    AddUnique (g_ListTransTotalSecondsStats, szBuffer);
 
     return true;
 }
@@ -2000,15 +2129,15 @@ void PrintAndClearTransStats (FILE *fp)
         fprintf(fp, "%s\n", pszLine.c_str());
     }
 
-    WriteHelpAndType (fp, g_szDominoTrans, "total_ms", "counter", "Total transaction time in milliseconds");
+    WriteHelpAndType (fp, g_szDominoTrans, "seconds_total", "counter", "Total transaction time in seconds");
 
-    for (const auto &pszLine : g_ListTransTotalMsStats)
+    for (const auto &pszLine : g_ListTransTotalSecondsStats)
     {
         fprintf(fp, "%s\n", pszLine.c_str());
     }
 
     g_ListTransCountStats.clear();
-    g_ListTransTotalMsStats.clear();
+    g_ListTransTotalSecondsStats.clear();
 }
 
 
@@ -2229,14 +2358,20 @@ void WriteExporterCommonStats (FILE *fp)
     }
 
     WriteStatsEntryToFile (fp, g_szDominoHealth, "maintenance_status", "Domino maintenance status", IsInMaintenanceMode());
-    WriteStatsEntryToFile (fp, g_szDominoHealth, "server_restricted_status", "Domino server restricted status", g_wServerRestricted);
+    WriteStatsEntryToFile (fp, g_szDominoHealth, "server_restricted_status", "Domino server restricted status (notes.ini server_restricted)", g_wServerRestricted);
 }
 
 
 STATUS ProcessDominoStatistics (const char *pszFilename, bool bWriteShutdownStats = false)
 {
-    STATUS   error = NOERROR;
+    STATUS   error       = NOERROR;
+    STATUS   PingErr     = NOERROR;
+    STATUS   ResponseErr = NOERROR;
+
     char     szTempFilename[MAXPATH+1] = {0};
+    DWORD    dwLatencyMsec      = 0;
+    DWORD    dwResponseTimeMsec = 0;
+    DWORD    dwServerState      = 0;
 
     CONTEXT_STRUCT_TYPE Stats = {0};
 
@@ -2279,6 +2414,44 @@ STATUS ProcessDominoStatistics (const char *pszFilename, bool bWriteShutdownStat
         WriteTimedateStat (Stats.fp, "stat_shutdown_timestamp", "Domino statistic shutdown epoch time", &tNow);
         goto Done;
     }
+
+    PingErr = GetServerPingLatency (g_szLocalUser, &dwLatencyMsec);
+
+    if (PingErr)
+    {
+        switch (PingErr)
+        {
+            case ERR_SERVER_RESTRICTED:
+                dwServerState = SERVER_STATE_RESTRICTED;
+                break;
+
+            case ERR_SERVER_UNAVAILABLE:
+                dwServerState = SERVER_STATE_UNAVAILABLE;
+                break;
+
+            default:
+                dwServerState = SERVER_STATE_NOT_REACHABLE;
+                break;
+        }
+    }
+    else
+    {
+        ResponseErr = GetServerResponseTimeMsec(g_szLocalUser, &dwResponseTimeMsec);
+
+        if (NOERROR == ResponseErr)
+            dwServerState = SERVER_STATE_AVAILABLE;
+        else
+            dwServerState = SERVER_STATE_NOT_REACHABLE;
+    }
+
+    WriteStatsEntryToFile (Stats.fp, g_szDominoHealth, "state", "State (0=Available, 1=Restricted, 2=Busy, 3=Not reachable)", (uint64_t)dwServerState);
+
+    if (dwServerState < SERVER_STATE_NOT_REACHABLE)
+        WriteStatsEntryToFileMSecToSeconds (Stats.fp, g_szDominoHealth, "ping_latency_seconds", "Domino NSPing (NRPC) response time (seconds)", dwLatencyMsec);
+
+    if (dwServerState < SERVER_STATE_RESTRICTED)
+        WriteStatsEntryToFileMSecToSeconds (Stats.fp, g_szDominoHealth, "response_time_seconds", "Domino response time opening names.nsf over NRPC (seconds)", dwResponseTimeMsec);
+
 
     /* Reset Domino statistics buffer for making sure we don't get a stat more than once */
     BeginDominoStatCollection();
@@ -2456,6 +2629,7 @@ BOOL GetEnvironmentVars (BOOL bFirstTime)
     g_bMaintenanceStartSet = OSGetEnvironmentTIMEDATE (ENV_DOMPROM_MAINTENANCE_START, &g_tMaintenanceStart);
     g_bMaintenanceEndSet   = OSGetEnvironmentTIMEDATE (ENV_DOMPROM_MAINTENANCE_END,   &g_tMaintenanceEnd);
     g_wServerRestricted    = (WORD) OSGetEnvironmentLong ("SERVER_RESTRICTED");
+    g_dwDAOSCatalogStatus  = (DWORD) OSGetEnvironmentLong ("DAOSCATALOGSTATE");
 
     return bUpdated;
 }
@@ -3101,7 +3275,12 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
     /* Else check for Domino defined stats directory */
     if (FALSE == OSGetEnvironmentString (ENV_DOMPROM_STATS_DIR, szStatsDirName, sizeof (szStatsDirName)-1))
     {
-        *szStatsDirName = '\0';
+        /* If notes.ini is not found check OS environment variable */
+        pParam = getenv (OSENV_DOMPROM_STATS_DIR);
+        if (pParam)
+            snprintf (szStatsDirName, sizeof (szStatsDirName), "%s", pParam);
+        else
+            *szStatsDirName = '\0';
     }
 
     /* Else check for OS level defined stats directory */
