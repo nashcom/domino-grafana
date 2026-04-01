@@ -26,7 +26,7 @@
 
 #define DOMPROM_VERSION_MAJOR 1
 #define DOMPROM_VERSION_MINOR 0
-#define DOMPROM_VERSION_PATCH 4
+#define DOMPROM_VERSION_PATCH 5
 
 #define DOMPROM_VERSION_BUILD (DOMPROM_VERSION_MAJOR * 10000 +  DOMPROM_VERSION_MINOR * 100 + DOMPROM_VERSION_PATCH)
 
@@ -106,8 +106,8 @@
 #include <misc.h>
 #include <miscerr.h>
 #include <mq.h>
-#include <nsfdb.h>
 #include <ns.h>
+#include <nsfdb.h>
 #include <nsfnote.h>
 #include <nsfsearc.h>
 #include <osenv.h>
@@ -977,39 +977,9 @@ bool WriteStatsEntryToFile (FILE *fp, const char *pszPrefix, const char *pszStat
     if (false == WriteHelpAndType (fp, pszPrefix, pszStatName, NULL, pszDescription))
         return false;
 
-    fprintf (fp, "%s_%s %zu\n", pszPrefix, pszStatName, ValueNum);
+    fprintf (fp, "%s_%s %" PRIu64 "\n", pszPrefix, pszStatName, ValueNum);
 
     return true;
-}
-
-
-static bool WriteStatsEntryToFileDouble (FILE *fp, const char *pszPrefix, const char *pszStatName, const char *pszDescription, double dValue)
-{
-    if (NULL == fp)
-        return false;
-    if (NULL == pszPrefix)
-        return false;
-    if (NULL == pszStatName)
-        return false;
-
-    if (false == WriteHelpAndType (fp, pszPrefix, pszStatName, NULL, pszDescription))
-        return false;
-
-    fprintf (fp, "%s_%s %.3f\n", pszPrefix, pszStatName, dValue);
-
-    return true;
-}
-
-static bool WriteStatsEntryToFileMSecToSeconds (FILE *fp, const char *pszPrefix, const char *pszStatName, const char *pszDescription, DWORD dwValue)
-{
-    if (NULL == fp)
-        return false;
-    if (NULL == pszPrefix)
-        return false;
-    if (NULL == pszStatName)
-        return false;
-
-    return WriteStatsEntryToFileDouble (fp, pszPrefix, pszStatName, pszDescription, (double)dwValue / 1000.0);
 }
 
 
@@ -1036,7 +1006,28 @@ bool WriteStatsEntryToFile (FILE *fp, const char *pszPrefix, const char *pszStat
 }
 
 
-bool WriteTimedateStat (FILE *fp, const char *pszStatName, const char *pszDescription, void *pValue)
+static bool WriteStatsEntryToFileMSecToSeconds (FILE *fp, const char *pszPrefix, const char *pszStatName, const char *pszDescription, DWORD dwValue)
+{
+    if (NULL == fp)
+        return false;
+    if (NULL == pszPrefix)
+        return false;
+    if (NULL == pszStatName)
+        return false;
+
+    if (!WriteHelpAndType(fp, pszPrefix, pszStatName, NULL, pszDescription))
+        return false;
+
+    size_t sec  = dwValue / 1000;
+    size_t frac = dwValue % 1000;
+
+    fprintf(fp, "%s_%s %zu.%03zu\n", pszPrefix, pszStatName, sec, frac);
+
+    return true;
+}
+
+
+static bool WriteTimedateStat (FILE *fp, const char *pszStatName, const char *pszDescription, void *pValue)
 {
     uint64_t EpochTime = 0;
 
@@ -1430,9 +1421,8 @@ Done:
 
 STATUS LNCALLBACK DomExportTraverse (void *pContext, char *pszFacility, char *pszStatName, WORD wValueType, void *pValue)
 {
-    STATUS error          = NOERROR;
-    WORD   wLen           = 0;
-    NFMT   NumberFormat   = {0};
+    STATUS error = NOERROR;
+    int    len   = 0;
 
     char   szDescription[MAX_STAT_DESC+1] = {0};
     char   szMetric[1024]      = {0};
@@ -1474,9 +1464,6 @@ STATUS LNCALLBACK DomExportTraverse (void *pContext, char *pszFacility, char *ps
             return NOERROR;
         }
     }
-
-    NumberFormat.Digits = 2;
-    NumberFormat.Format = NFMT_GENERAL;
 
     snprintf (szMetric, sizeof (szMetric), "%s.%s", pszFacility, pszStatName);
 
@@ -1523,15 +1510,15 @@ STATUS LNCALLBACK DomExportTraverse (void *pContext, char *pszFacility, char *ps
             }
             else if (0 == CompareCaseInsensitive (szMetric, "DominoBackup_LastBackup_DB_Status"))
             {
-                WriteStatsEntryToFile (pStats->fp, g_szDominoHealth, "LastBackup_DB_Status", szDescription, CompareCaseInsensitive ((const char *)pValue, "Successful") ? "1" : "0");
+                WriteStatsEntryToFile (pStats->fp, g_szDominoHealth, "LastBackup_DB_Status", szDescription, CompareCaseInsensitive ((const char *)pValue, "Successful") ? 1 : 0);
             }
             else if (0 == CompareCaseInsensitive (szMetric, "DominoBackup_LastBackup_TL_Status"))
             {
-                WriteStatsEntryToFile (pStats->fp, g_szDominoHealth, "LastBackup_TL_Status", szDescription, CompareCaseInsensitive ((const char *)pValue, "Successful") ? "1" : "0");
+                WriteStatsEntryToFile (pStats->fp, g_szDominoHealth, "LastBackup_TL_Status", szDescription, CompareCaseInsensitive ((const char *)pValue, "Successful") ? 1 : 0);
             }
             else if (0 == CompareCaseInsensitive (szMetric, "DominoBackup_LastBackup_TL_LastLogExtend"))
             {
-                WriteStatsEntryToFile (pStats->fp, g_szDominoHealth, "LastBackup_TL_LastLogExtendNumber", szDescription, CompareCaseInsensitive ((const char *)pValue, "Successful") ? "1" : "0");
+                WriteStatsEntryToFile (pStats->fp, g_szDominoHealth, "LastBackup_TL_LastLogExtendNumber", szDescription, CompareCaseInsensitive ((const char *)pValue, "Successful") ? 1 : 0);
             }
 
             if (pStats->bExportText)
@@ -1557,19 +1544,27 @@ STATUS LNCALLBACK DomExportTraverse (void *pContext, char *pszFacility, char *ps
 
             pStats->CountNumber++;
 
-            if (pStats->bExportLong)
             {
-                error = ConvertFLOATToText (&(pStats->Intl), &NumberFormat, (NUMBER *)pValue, szValue, sizeof (szValue)-1, &wLen);
-                if (error)
+                double val = *(NUMBER *)pValue;
+
+                /* Scale to 3 decimal fixed-point */
+                int64_t scaled    = (int64_t)(val * 1000.0 + (val >= 0 ? 0.5 : -0.5));
+                int64_t int_part  = scaled / 1000;
+                int64_t frac_part = llabs(scaled % 1000);
+
+                /* Format into string buffer */
+                len = snprintf(szValue, sizeof(szValue), "%" PRId64 ".%03" PRId64, int_part, frac_part);
+
+                if (len <= 0)
                 {
                     pStats->CountInvalid++;
                 }
                 else
                 {
-                    szValue[wLen] = '\0';
                     WriteStatsEntryToFile (pStats->fp, pStats->szPrefix, szMetric, szDescription, szValue);
                 }
             }
+
             break;
 
         case VT_TIMEDATE:
@@ -1599,7 +1594,7 @@ STATUS LNCALLBACK DomExportTraverse (void *pContext, char *pszFacility, char *ps
                 }
                 else
                 {
-                    WriteStatsEntryToFile (pStats->fp, pStats->szPrefix, szMetric, szDescription, szValue);
+                    WriteStatsEntryToFile (pStats->fp, pStats->szPrefix, szMetric, szDescription, (const char*) szValue);
                 }
             }
             break;
@@ -2102,14 +2097,14 @@ bool AddTransactionStats (const char *pszMetricPrefix, const char *pszOp, int Co
 
     AddUnique (g_ListTransCountStats, szBuffer);
 
-    // total_seconds
     snprintf(
         szBuffer,
         sizeof(szBuffer),
-        "%s_total_seconds{op=\"%s\"} %.3f",
+        "%s_total_seconds{op=\"%s\"} %d.%03d",
         pszMetricPrefix,
         pszOp,
-        (double)TotalMs / 1000.0);
+        TotalMs / 1000,
+        TotalMs % 1000);
 
     AddUnique (g_ListTransTotalSecondsStats, szBuffer);
 
@@ -2672,22 +2667,34 @@ bool IsAbsolutePath (const char *pszTarget)
 }
 
 
-int ConvertToHumanReadableTime (double seconds, size_t MaxStrLen, char *retpszTime)
+/* Use integers instead of flow to avoid locale issues and float in general */
+int ConvertToHumanReadableTime(size_t seconds, size_t MaxStrLen, char *retpszTime)
 {
-    if (seconds >= 86400.0)
+    size_t integer, fraction;
+
+    if (seconds >= 86400)
     {
-        return snprintf (retpszTime, MaxStrLen, "%.2f days", seconds / 86400.0);
+        integer = seconds / 86400;
+        fraction = ((seconds % 86400) * 100) / 86400;
+
+        return snprintf(retpszTime, MaxStrLen, "%zu.%02zu days", integer, fraction);
     }
-    else if (seconds >= 3600.0)
+    else if (seconds >= 3600)
     {
-        return snprintf (retpszTime, MaxStrLen, "%.2f hours", seconds / 3600.0);
+        integer = seconds / 3600;
+        fraction = ((seconds % 3600) * 100) / 3600;
+
+        return snprintf(retpszTime, MaxStrLen, "%zu.%02zu hours", integer, fraction);
     }
-    else if (seconds >= 60.0)
+    else if (seconds >= 60)
     {
-        return snprintf(retpszTime, MaxStrLen, "%.2f minutes", seconds / 60.0);
+        integer = seconds / 60;
+        fraction = ((seconds % 60) * 100) / 60;
+
+        return snprintf(retpszTime, MaxStrLen, "%zu.%02zu minutes", integer, fraction);
     }
 
-    return snprintf (retpszTime, MaxStrLen, "%.2f seconds", seconds);
+    return snprintf(retpszTime, MaxStrLen, "%zu seconds", seconds);
 }
 
 
