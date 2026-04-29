@@ -26,25 +26,26 @@
 
 #define DOMPROM_VERSION_MAJOR 1
 #define DOMPROM_VERSION_MINOR 0
-#define DOMPROM_VERSION_PATCH 5
+#define DOMPROM_VERSION_PATCH 6
 
 #define DOMPROM_VERSION_BUILD (DOMPROM_VERSION_MAJOR * 10000 +  DOMPROM_VERSION_MINOR * 100 + DOMPROM_VERSION_PATCH)
 
 #define DOMPROM_COPYRIGHT  "Copyright Daniel Nashed/Nash!Com 2024-2026"
 #define DOMPROM_GITHUB_URL "https://github.com/nashcom/domino-grafana"
 
-#define ENV_DOMPROM_LOGLEVEL          "domprom_loglevel"
-#define ENV_DOMPROM_STATS_DIR         "domprom_outdir"
-#define ENV_DOMPROM_OUTFILE           "domprom_outfile"
-#define ENV_DOMPROM_TRANS_OUTFILE     "domprom_trans_outfile"
-#define ENV_DOMPROM_INTERVAL          "domprom_interval"
-#define ENV_DOMPROM_NO_PREFIX         "domprom_no_domino_prefix"
-#define ENV_DOMPROM_COLLECT_TRANS     "domprom_collect_trans"
-#define ENV_DOMPROM_COLLECT_IOSTAT    "domprom_collect_iostat"
-#define ENV_DOMPROM_INTERVAL_TRANS    "domprom_interval_trans"
-#define ENV_DOMPROM_INTERVAL_IOSTAT   "domprom_interval_iostat"
-#define ENV_DOMPROM_MAINTENANCE_START "domprom_maintenance_start"
-#define ENV_DOMPROM_MAINTENANCE_END   "domprom_maintenance_end"
+#define ENV_DOMPROM_LOGLEVEL             "domprom_loglevel"
+#define ENV_DOMPROM_STATS_DIR            "domprom_outdir"
+#define ENV_DOMPROM_OUTFILE              "domprom_outfile"
+#define ENV_DOMPROM_TRANS_OUTFILE        "domprom_trans_outfile"
+#define ENV_DOMPROM_INTERVAL             "domprom_interval"
+#define ENV_DOMPROM_NO_PREFIX            "domprom_no_domino_prefix"
+#define ENV_DOMPROM_COLLECT_TRANS        "domprom_collect_trans"
+#define ENV_DOMPROM_COLLECT_IOSTAT       "domprom_collect_iostat"
+#define ENV_DOMPROM_INTERVAL_TRANS       "domprom_interval_trans"
+#define ENV_DOMPROM_INTERVAL_IOSTAT      "domprom_interval_iostat"
+#define ENV_DOMPROM_MAINTENANCE_START    "domprom_maintenance_start"
+#define ENV_DOMPROM_MAINTENANCE_END      "domprom_maintenance_end"
+#define ENV_DOMPROM_PROBE_CLOSE_SESSION  "domprom_probe_close_session"
 
 /* OS Level stats directory for container images */
 #define OSENV_DOMPROM_STATS_DIR       "DOMINO_PROM_STATS_DIR"
@@ -192,24 +193,23 @@ char  g_szPromTypeUntyped[]   = "untyped";
 char  g_szEmpty[]             = "";
 char  g_szEvents4[]           = "events4.nsf";
 
-WORD   g_wTranslogLogType     = 0;
-WORD   g_wServerRestricted    = 0;
-int    g_StatusDAOS           = 0;
-int    g_CatalogInSyncDAOS    = 0;
-size_t g_TranslogMinLogExtend = 0;
-size_t g_TranslogMaxLogExtend = 0;
+WORD   g_wTranslogLogType          = 0;
+WORD   g_wServerRestricted         = 0;
+int    g_StatusDAOS                = 0;
+size_t g_TranslogMinLogExtend      = 0;
+size_t g_TranslogMaxLogExtend      = 0;
 WORD   g_wWriteDominoHealthStats   = 1;
 WORD   g_wCollectDominoTransStats  = 0;
 WORD   g_wCollectDominoIOStat      = 0;
+WORD   g_ProbeCloseSession         = 0;
 
-TIMEDATE g_tNextTransStatsUpdate = {0};
-TIMEDATE g_tNextIOStatUpdate     = {0};
-TIMEDATE g_tMaintenanceStart     = {0};
-TIMEDATE g_tMaintenanceEnd       = {0};
-
-WORD     g_wMaintenanceEnabled   = 0;
-BOOL     g_bMaintenanceStartSet  = FALSE;
-BOOL     g_bMaintenanceEndSet    = FALSE;
+TIMEDATE g_tNextTransStatsUpdate   = {0};
+TIMEDATE g_tNextIOStatUpdate       = {0};
+TIMEDATE g_tMaintenanceStart       = {0};
+TIMEDATE g_tMaintenanceEnd         = {0};
+WORD     g_wMaintenanceEnabled     = 0;
+BOOL     g_bMaintenanceStartSet    = FALSE;
+BOOL     g_bMaintenanceEndSet      = FALSE;
 
 #define MAX_CONFIG_VALUE_OVERRIDE 99
 
@@ -848,46 +848,6 @@ STATUS DeleteAllStatsForPackage (const char *pszStatPkg)
 }
 
 
-STATUS UpdateStatusDAOS (const char *pszValue)
-{
-    STATUS error = NOERROR;
-
-    if (NULL == pszValue)
-        return ERR_MISC_INVALID_ARGS;
-
-    if (0 == CompareCaseInsensitive (pszValue, "Enabled"))
-    {
-        g_StatusDAOS = 1;
-    }
-    else
-    {
-        g_StatusDAOS = 0;
-    }
-
-    return error;
-}
-
-
-STATUS UpdateCatalogDAOS (const char *pszValue)
-{
-    STATUS error = NOERROR;
-
-    if (NULL == pszValue)
-        return ERR_MISC_INVALID_ARGS;
-
-    if (0 == CompareCaseInsensitive (pszValue, "Synchronized"))
-    {
-        g_CatalogInSyncDAOS = 0;
-    }
-    else
-    {
-        g_CatalogInSyncDAOS = 1;
-    }
-
-    return error;
-}
-
-
 void UpdateIdleStatus()
 {
     char szStatus [MAXSPRINTF+1] = {0};
@@ -1306,8 +1266,8 @@ STATUS GetServerResponseTimeMsec(const char *pszServerName, DWORD *retpdwMsec)
 {
     STATUS   error       = NOERROR;
     DBHANDLE hDb         = NULLHANDLE;
-    uint64_t    qwTickStart = 0;
-    uint64_t    qwTickEnd   = 0;
+    uint64_t qwTickStart = 0;
+    uint64_t qwTickEnd   = 0;
     char     szFullDbPath [MAXPATH + 1] = {0};
 
     if (retpdwMsec)
@@ -1329,10 +1289,17 @@ STATUS GetServerResponseTimeMsec(const char *pszServerName, DWORD *retpdwMsec)
         *retpdwMsec = (DWORD)(qwTickEnd - qwTickStart);
 
 Done:
-    if (hDb)
-        NSFDbClose(hDb);
 
-    hDb = NULLHANDLE;
+    if (hDb)
+    {
+        /* Close session allows to test including authenticaiton but causes a new session log entry quite often */
+        if (g_ProbeCloseSession)
+            NSFDbCloseSession(hDb);
+        else
+            NSFDbClose(hDb);
+
+        hDb = NULLHANDLE;
+    }
 
     return error;
 }
@@ -1500,15 +1467,7 @@ STATUS LNCALLBACK DomExportTraverse (void *pContext, char *pszFacility, char *ps
 
             pStats->CountText++;
 
-            if (0 == CompareCaseInsensitive (szMetric, "DAOS_Engine_Status"))
-            {
-                UpdateStatusDAOS ((const char *)pValue);
-            }
-            else if (0 == CompareCaseInsensitive (szMetric, "DAOS_Engine_Catalog"))
-            {
-                UpdateCatalogDAOS ((const char *)pValue);
-            }
-            else if (0 == CompareCaseInsensitive (szMetric, "DominoBackup_LastBackup_DB_Status"))
+            if (0 == CompareCaseInsensitive (szMetric, "DominoBackup_LastBackup_DB_Status"))
             {
                 WriteStatsEntryToFile (pStats->fp, g_szDominoHealth, "LastBackup_DB_Status", szDescription, CompareCaseInsensitive ((const char *)pValue, "Successful") ? 1 : 0);
             }
@@ -1712,31 +1671,25 @@ STATUS ProcessDiskStats (FILE *fp)
     return NOERROR;
 }
 
+
 STATUS ProcessDaosStats (FILE *fp)
 {
-    int CatalogStatus = 1;
-
     if (NULL == fp)
         return ERR_MISC_INVALID_ARGS;
-
-    if (0 == g_StatusDAOS)
-        CatalogStatus = -1;
-    else if (g_CatalogInSyncDAOS)
-        CatalogStatus = 0;
-    else
-        CatalogStatus = 1;
 
     if (g_wWriteDominoHealthStats)
     {
         StatUpdateNumber (g_szDominoHealth, "DAOS.Status", g_StatusDAOS);
-        StatUpdateNumber (g_szDominoHealth, "DAOS.Catalog.Status", CatalogStatus);
+        StatUpdateNumber (g_szDominoHealth, "DAOS.Catalog.Status", g_dwDAOSCatalogStatus);
     }
 
-    WriteStatsEntryToFile (fp, g_szDominoHealth, "daos_status",             "Domino DAOS enabled", g_StatusDAOS);
-    WriteStatsEntryToFile (fp, g_szDominoHealth, "daos_catalog_not_synced", "Domino DAOS Catalog status (0 = in sync)", g_CatalogInSyncDAOS);
+    WriteStatsEntryToFile (fp, g_szDominoHealth, "daos_status", "Domino DAOS enabled", g_StatusDAOS);
 
     if (g_StatusDAOS)
-        WriteStatsEntryToFile (fp, g_szDominoHealth, "daos_catalog_status", "DAOS Catalog status (0=Unavailable, 1=Synced, 2=Needs Resync, 3=Resyncing, 4=Readonly, 5=Rebuilding)", g_dwDAOSCatalogStatus);
+    {
+        WriteStatsEntryToFile (fp, g_szDominoHealth, "daos_catalog_status",     "DAOS Catalog status (0=Unavailable, 1=Synced, 2=Needs Resync, 3=Resyncing, 4=Readonly, 5=Rebuilding)", g_dwDAOSCatalogStatus);
+        WriteStatsEntryToFile (fp, g_szDominoHealth, "daos_catalog_not_synced", "Domino DAOS Catalog status (0 = in sync)", (1 == g_dwDAOSCatalogStatus) ? 0:1);
+    }
 
     return NOERROR;
 }
@@ -2615,16 +2568,18 @@ BOOL GetEnvironmentVars (BOOL bFirstTime)
         bUpdated = TRUE;
     }
 
+    g_bMaintenanceStartSet = OSGetEnvironmentTIMEDATE (ENV_DOMPROM_MAINTENANCE_START, &g_tMaintenanceStart);
+    g_bMaintenanceEndSet   = OSGetEnvironmentTIMEDATE (ENV_DOMPROM_MAINTENANCE_END,   &g_tMaintenanceEnd);
+    g_ProbeCloseSession = (WORD)  OSGetEnvironmentLong (ENV_DOMPROM_PROBE_CLOSE_SESSION);
+    g_wServerRestricted    = (WORD)  OSGetEnvironmentLong ("SERVER_RESTRICTED");
+    g_dwDAOSCatalogStatus  = (DWORD) OSGetEnvironmentLong ("DAOSCATALOGSTATE");
+    g_StatusDAOS           = (DWORD) OSGetEnvironmentLong ("DAOSENABLE");
+
     if (bUpdated)
     {
         /* Update idle message */
         UpdateIdleStatus();
     }
-
-    g_bMaintenanceStartSet = OSGetEnvironmentTIMEDATE (ENV_DOMPROM_MAINTENANCE_START, &g_tMaintenanceStart);
-    g_bMaintenanceEndSet   = OSGetEnvironmentTIMEDATE (ENV_DOMPROM_MAINTENANCE_END,   &g_tMaintenanceEnd);
-    g_wServerRestricted    = (WORD) OSGetEnvironmentLong ("SERVER_RESTRICTED");
-    g_dwDAOSCatalogStatus  = (DWORD) OSGetEnvironmentLong ("DAOSCATALOGSTATE");
 
     return bUpdated;
 }
