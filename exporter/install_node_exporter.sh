@@ -1,8 +1,8 @@
 #!/bin/bash
 
-DOWNLOAD_VERSION=1.10.2
-DOWNLOAD_URL=https://github.com/prometheus/node_exporter/releases/download/v1.10.2/node_exporter-1.10.2.linux-amd64.tar.gz
-DOWNLOAD_HASH=c46e5b6f53948477ff3a19d97c58307394a29fe64a01905646f026ddc32cb65b
+DOWNLOAD_VERSION=1.11.1
+DOWNLOAD_URL=https://github.com/prometheus/node_exporter/releases/download/v1.11.1/node_exporter-1.11.1.linux-amd64.tar.gz
+DOWNLOAD_HASH=9f5ea48e5bc7b656f8a91a32e7d7deb89f70f73dabd0d974418aca15f37d6810
 
 SYSTEMD_NAME=node_exporter
 SYSTEMD_FILE=$SYSTEMD_NAME.service
