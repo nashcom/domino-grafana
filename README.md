@@ -184,6 +184,26 @@ K8s uses the `namespace` and `pod` label in dashboards.
 To align Kubernetes with Docker and native Linux deployments set `namespace` and `pod` labels in Prometheus scrape configuration.
 
 
+## Alertmanager
+
+There are two different Alertmanger options:
+
+### 1. Configure Alertmanger on Prometheus level
+
+This is the classical option which uses Prometheus data directy.
+It also requires alert rules defined in ` alerts.yml` files.
+The email configuration is defineed in `prometheus.yml`.
+See `prometheus.yml.example` for details.
+
+The Alertmanager is an optional container which is only started if specifying the alertmanger profile.
+
+### 2. Use Grafana Unified Alertmanager
+
+Newer option integrated into Grafana. 
+The email configuration is part of Grafana.
+Create an .env file based on env.example to configure the SMTP settings.
+
+
 ## Bringing up the Docker Compose stack
 
 Once those two configuration steps are provided, the compose stack can be started:

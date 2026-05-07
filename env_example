@@ -1,0 +1,11 @@
+
+# Prometheus Configuration
+
+PROM_RETENTION_TIME=30d
+PROM_RETENTION_SIZE=200GB
+
+# Grafana SMTP Configuration
+GF_SMTP_HOST="mail.example.com:25"
+GF_SMTP_FROM_ADDRESS="grafana@example.com"
+GF_SMTP_FROM_NAME="Example.Com Grafana"
+GF_SMTP_EHLO_IDENTITY="grafana.example.com"

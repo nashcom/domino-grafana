@@ -20,6 +20,13 @@ services:
       NO_PROXY: localhost,127.0.0.1,grafana,prometheus
       no_proxy: localhost,127.0.0.1,grafana,prometheus
 
+      GF_SMTP_ENABLED: "true"
+      GF_SMTP_HOST: "${GF_SMTP_HOST:-mail.example.com:25}"
+      GF_SMTP_FROM_ADDRESS: "${GF_SMTP_FROM_ADDRESS:-grafana}"
+      GF_SMTP_FROM_NAME: "${GF_SMTP_FROM_NAME:-Grafana}"
+      GF_SMTP_EHLO_IDENTITY: "${GF_SMTP_EHLO_IDENTITY:-grafana}"
+      GF_SMTP_STARTTLS_POLICY: "${GF_SMTP_STARTTLS_POLICY:-MandatoryStartTLS}"
+
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:z
       - grafana-data:/var/lib/grafana
@@ -37,9 +44,50 @@ services:
 
     environment: *no-proxy
 
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=${PROM_RETENTION_TIME:-30d}'
+      - '--storage.tsdb.retention.size=${PROM_RETENTION_SIZE:-200GB}'
+
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:z
+      - ./alerts.yml:/etc/prometheus/alerts.yml:z
       - prometheus-data:/prometheus
+
+    ports:
+      - "${PROM_BIND:-127.0.0.1}:${PROM_BIND_PORT:-9090}:9090"
+
+    networks:
+      grafana_net:
+
+  alertmanager:
+
+    image: prom/alertmanager
+    container_name: alertmanager
+    hostname: alertmanager
+
+    profiles:
+      - alertmanger 
+    depends_on:
+      - prometheus
+
+    restart: always
+    stop_grace_period: 15s
+
+    environment: *no-proxy
+
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--data.retention=${ALERTMANAGER_RETENTION:-120h}'
+
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:z
+      - alertmanager-data:/alertmanager
+
+    ports:
+      - "${ALERTMANAGER_BIND:-127.0.0.1}:${ALERTMANAGER_PORT:-9093}:9093"
 
     networks:
       grafana_net:
@@ -55,9 +103,6 @@ services:
     volumes:
       - ./loki-config.yml:/loki-config.yml:z
       - loki-data:/tmp/loki
-
-    ports:
-      - "3100:3100"
 
     command: -config.file=/loki-config.yml
 
@@ -108,13 +153,15 @@ services:
     networks:
       grafana_net:
 
-
 volumes:
 
   grafana-data:
     external: false
 
   prometheus-data:
+    external: false
+
+  alertmanager-data:
     external: false
 
   loki-data:

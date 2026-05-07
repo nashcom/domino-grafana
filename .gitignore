@@ -5,8 +5,10 @@ exporter/domprom
 exporter/*.o
 exporter/*.obj
 prometheus.yml
+alertmanager.yml
 certs/*.pem
 certs/*.txt
 domfwd/domfwd
 domfwd/wal_test
 domfwd/*.o
+.env
