@@ -3,6 +3,9 @@
 Domino NRPC blackbox exporter — a lightweight Prometheus-compatible probe for checking HCL Domino server availability via NRPC.
 Runs as a native Domino servertask on Linux.
 
+It's providing similar functionality the [Grafana Blackbox](https://github.com/prometheus/blackbox_exporter) provides. Just for NRPC connections.
+The binary can run on one of more servers and allows to query other Domino servers via NRPC.
+
 ---
 
 ## Overview
@@ -153,7 +156,7 @@ Authorization: Bearer my-secret-token
 | `3`   | Not reachable (likely down) |
 
 
-## Prometheus Scrape Config
+## Example Prometheus Scrape Config
 
 ```yaml
 scrape_configs:
