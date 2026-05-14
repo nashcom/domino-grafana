@@ -11,4 +11,6 @@ certs/*.txt
 domfwd/domfwd
 domfwd/wal_test
 domfwd/*.o
+domprobe/domprobe
+domprobe/*.o
 .env

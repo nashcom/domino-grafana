@@ -92,6 +92,33 @@ services:
     networks:
       grafana_net:
 
+  blackbox-exporter:
+
+    image: prom/blackbox-exporter:latest
+    container_name: blackbox-exporter
+    hostname: blackbox-exporter
+
+    restart: always
+    stop_grace_period: 15s
+
+    environment: *no-proxy
+
+    cap_add:
+      - NET_RAW
+
+    ports:
+      - "${BLACKBOX_BIND:-127.0.0.1}:${BLACKBOX_PORT:-9115}:9115"
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9115/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    networks:
+      grafana_net:
+
   loki:
     image: grafana/loki:latest
     container_name: loki

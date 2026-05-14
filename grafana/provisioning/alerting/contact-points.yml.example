@@ -1,0 +1,13 @@
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: email-default 
+
+    receivers:
+      - uid: email-default
+        type: email
+
+        settings:
+          addresses: grafana@example.com
+          singleEmail: true
