@@ -1,78 +1,84 @@
 # domfwd - Domino Log Forwarder
 
-The Domino Log Forwarder is a helper program which takes log data from STDIN
+The Domino Log Forwarder is a helper program which takes log data from STDIN.
 
-- Generates a Loki compatible JSON format and pushes log data to a [Loki API endpoint](https://grafana.com/docs/loki/latest/reference/loki-http-api/#ingest-logs)
-- Annotates the log lines for ProcessID prefix using `pid.nbf` to provide the servertask information
-- Writes the output data to STDOUT or a defined log file
+Features:
 
+* Generates a Loki compatible JSON format and pushes log data to a [Loki API endpoint](https://grafana.com/docs/loki/latest/reference/loki-http-api/#ingest-logs)
+* Annotates log lines using `pid.nbf` to provide the Domino server task name
+* Writes output data to STDOUT or a defined log file
+* Supports Alloy compatible JSON output
+* Supports durable WAL based retry for Loki push operations
 
 ## Flow
 
-```
+```bash id="v4u4nq"
 /opt/hcl/domino/bin/server | domfwd
 ```
 
-## Environment Variables
+`domfwd` is designed as a stream processor and log forwarder.
+It is not a process supervisor or init replacement.
 
+## Environment Variables
 
 The following variables are used to enable forwarding.
 
-The following three output options exists and can be combined.
-By default all log data is written to the Notes output log specified via **DOMINO_OUTPUT_LOG**.
+The following three output options exist and can be combined.
+By default all log data is written to the Notes output log specified via `DOMINO_OUTPUT_LOG`.
 
-In addition to the standard log file logs can be
+In addition to the standard log file, logs can be:
 
-- Pushed directly to Loki over HTTP API
-- Written annotated to STOUT in JSON format ready for Alloy ingestion
-- Written annotated to a file in JSON format ready for Alloy ingestion
-- Mirrored to STDOUT for compatibility
-
+* Pushed directly to Loki over HTTP API
+* Written annotated to STDOUT in JSON format ready for Alloy ingestion
+* Written annotated to a file in JSON format ready for Alloy ingestion
+* Mirrored to STDOUT for compatibility
 
 ### Output related configuration
 
-The following table shows the main configuration.  
-Not all output options should be combined.  
-Please pick only one STDOUT option for example!
+The following table shows the main configuration.
+Not all output options should be combined.
+Please pick only one STDOUT option to avoid mixing raw and structured log streams.
 
-
-| Variable Name                | Description                       | Example / Comments                             |
-|:-----------------------------|:----------------------------------|:-----------------------------------------------|
-| **DOMINO_OUTPUT_LOG**        | Domino Output log file name       | /local/notesdata/notes.log                     |
-| **LOKI_PUSH_API_URL**        | Push URL for Loki Server          | https://loki.example.com:3101/loki/api/v1/push |
-| **LOKI_PUSH_TOKEN**          | Push Token for Loki Server        | my-secure-token                                |
-| **DOMFWD_MIRROR_STDOUT**     | Mirror stdin to stdout            | 1                                              |
-| **DOMFWD_ANNOTATE_STDOUT**   | Write JSON formatted Alloy STDOUT | 1                                              |
-| **DOMFWD_ANNOATED_LOG**      | Write JSON formatted Alloy file   | /var/log/domfwd.json                           |
-
+| Variable Name            | Description                       | Example / Comments                               |
+| :----------------------- | :-------------------------------- | :----------------------------------------------- |
+| `DOMINO_OUTPUT_LOG`      | Domino output log file name       | `/local/notesdata/notes.log`                     |
+| `LOKI_PUSH_API_URL`      | Push URL for Loki Server          | `https://loki.example.com:3101/loki/api/v1/push` |
+| `LOKI_PUSH_TOKEN`        | Push Token for Loki Server        | `my-secure-token`                                |
+| `DOMFWD_MIRROR_STDOUT`   | Mirror stdin to stdout            | `1`                                              |
+| `DOMFWD_ANNOTATE_STDOUT` | Write JSON formatted Alloy STDOUT | `1`                                              |
+| `DOMFWD_ANNOATED_LOG`    | Write JSON formatted Alloy file   | `/var/log/domfwd.json`                           |
 
 ### Additional configuration
 
 Most of the following parameters are optional.
 
-| Variable Name                | Description                       | Example / Comments                             |
-|:-----------------------------|:----------------------------------|:-----------------------------------------------|
-| **LOKI_CA_FILE**             | Trusted Root CA File              | /local/notesdata/trusted_root.pem              |
-| **LOKI_JOB**                 | Loki Job Name (default: hostname) |                                                |
-| **DOMFWD_LOGLEVEL**          | Log level for stdout logging      | 1                                              |
-| **DOMFWD_HOSTNAME**          | Hostname to use                   | default: hostname read from OS                 |
-| **DOMFWD_PROM_FILE**         | Prom File for Metrics output      | default: <notesdata>/domino/stats/domfwd.prom  |
+| Variable Name      | Description                       | Example / Comments                              |
+| :----------------- | :-------------------------------- | :---------------------------------------------- |
+| `LOKI_CA_FILE`     | Trusted Root CA File              | `/local/notesdata/trusted_root.pem`             |
+| `LOKI_JOB`         | Loki Job Name (default: hostname) |                                                 |
+| `DOMFWD_LOGLEVEL`  | Log level for stdout logging      | `1`                                             |
+| `DOMFWD_HOSTNAME`  | Hostname to use                   | default: hostname read from OS                  |
+| `DOMFWD_PROM_FILE` | Prom File for Metrics output      | default: `<notesdata>/domino/stats/domfwd.prom` |
 
+If no output log file is specified, log data is written to STDOUT.
 
+Letting `domfwd` write the output log avoids shell based output redirection and keeps log handling centralized in the forwarder.
 
-If no output log file is specified, log is written to STDOUT.
-Letting **domfwd** write the log file avoids a redirect of the output log.
+## Durable Log Delivery
 
+When using Loki HTTP Push, `domfwd` uses a local Write Ahead Log (WAL) to ensure logs are not lost during temporary network or Loki outages.
+
+Failed log pushes are written to the WAL and replayed automatically once connectivity is restored.
 
 ## Output log in JSON format for Loki API Push
 
-- Log stream
-- nano sec EPOCH time
-- Labels passed via stream
-- PID
-- Annotated servertask name
+* Log stream
+* Nano second EPOCH time
+* Labels passed via stream
+* PID
+* Annotated Domino server task name
 
-```
+```json id="u19h7f"
 {
   "streams": [
     {
@@ -96,18 +102,13 @@ Letting **domfwd** write the log file avoids a redirect of the output log.
 }
 ```
 
+## Output log in JSON format for Alloy ingestion
 
-## Output log in JSON format for Loki API Push
+* Nano second EPOCH time
+* PID
+* Annotated Domino server task name
 
-
-- Log stream
-- nano sec EPOCH time
-- PID
-- Annotated servertask name
-
-
-```
+```json id="9dgxgf"
 {"ts":1770749014360459684,"pid":86261,"process":"http","line":"[86261:000002-00007E61FEDAE2C0] 02/01/2026 00:48:03   HTTP Server: Shutdown"}
-
 ```
 
