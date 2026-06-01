@@ -26,6 +26,7 @@ services:
       GF_SMTP_FROM_NAME: "${GF_SMTP_FROM_NAME:-Grafana}"
       GF_SMTP_EHLO_IDENTITY: "${GF_SMTP_EHLO_IDENTITY:-grafana}"
       GF_SMTP_STARTTLS_POLICY: "${GF_SMTP_STARTTLS_POLICY:-MandatoryStartTLS}"
+      GF_SERVER_ROOT_URL: "$GF_SERVER_ROOT_URL"
 
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:z

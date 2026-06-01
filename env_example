@@ -9,3 +9,7 @@ GF_SMTP_HOST="mail.example.com:25"
 GF_SMTP_FROM_ADDRESS="grafana@example.com"
 GF_SMTP_FROM_NAME="Example.Com Grafana"
 GF_SMTP_EHLO_IDENTITY="grafana.example.com"
+
+# Grafana configuration
+
+GF_SERVER_ROOT_URL="https://grafana.example.com:3000/"
