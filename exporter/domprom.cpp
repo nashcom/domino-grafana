@@ -1,7 +1,7 @@
 /*
 ###########################################################################
 # Domino Prometheus Exporter                                              #
-# Version 1.0.4 20.03.2026                                                #
+# Version 1.0.7 25.04.2026                                                #
 # (C) Copyright Daniel Nashed/Nash!Com 2024-2026                          #
 #                                                                         #
 # Licensed under the Apache License, Version 2.0 (the "License");         #
@@ -26,7 +26,7 @@
 
 #define DOMPROM_VERSION_MAJOR 1
 #define DOMPROM_VERSION_MINOR 0
-#define DOMPROM_VERSION_PATCH 6
+#define DOMPROM_VERSION_PATCH 7
 
 #define DOMPROM_VERSION_BUILD (DOMPROM_VERSION_MAJOR * 10000 +  DOMPROM_VERSION_MINOR * 100 + DOMPROM_VERSION_PATCH)
 
@@ -41,8 +41,10 @@
 #define ENV_DOMPROM_NO_PREFIX            "domprom_no_domino_prefix"
 #define ENV_DOMPROM_COLLECT_TRANS        "domprom_collect_trans"
 #define ENV_DOMPROM_COLLECT_IOSTAT       "domprom_collect_iostat"
+#define ENV_DOMPROM_COLLECT_MBOX_STATS   "domprom_collect_mailbox"
 #define ENV_DOMPROM_INTERVAL_TRANS       "domprom_interval_trans"
 #define ENV_DOMPROM_INTERVAL_IOSTAT      "domprom_interval_iostat"
+#define ENV_DOMPROM_INTERVAL_MAILBOX     "domprom_interval_mailbox"
 #define ENV_DOMPROM_MAINTENANCE_START    "domprom_maintenance_start"
 #define ENV_DOMPROM_MAINTENANCE_END      "domprom_maintenance_end"
 #define ENV_DOMPROM_PROBE_CLOSE_SESSION  "domprom_probe_close_session"
@@ -53,10 +55,12 @@
 #define DOMPROM_DEFAULT_INTERVAL_SEC          60
 #define DOMPROM_DEFAULT_TRANS_INTERVAL_SEC   180
 #define DOMPROM_DEFAULT_IOSTAT_INTERVAL_SEC  600
+#define DOMPROM_DEFAULT_MBOX_INTERVAL_SEC    300
 
 #define DOMPROM_MINIMUM_INTERVAL_SEC          10
 #define DOMPROM_MINIMUM_TRANS_INTERVAL_SEC    60
 #define DOMPROM_MINIMUM_IOSTAT_INTERVAL_SEC   60
+#define DOMPROM_MINIMUM_MAILBOX_INTERVAL_SEC  60
 
 #define DOMPROM_DISK_COMPONENT_NOTESDATA     "Notesdata"
 #define DOMPROM_DISK_COMPONENT_TRANSLOG      "Translog"
@@ -96,8 +100,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <time.h>
 #include <stdint.h>
+#include <time.h>
 
 #include <global.h>
 #include <addin.h>
@@ -163,6 +167,28 @@ struct CONTEXT_STRUCT_TYPE
 };
 
 
+struct MAILBOX_STATS_TYPE
+{
+    /* counters */
+    DWORD bucket_lt_5;
+    DWORD bucket_5_15;
+    DWORD bucket_15_60;
+    DWORD bucket_ge_60;
+
+    /* average calculation */
+    uint64_t total_wait_seconds;
+    DWORD    total_count;
+    DWORD    error_count;
+
+    uint64_t MailBoxScanMsec;
+
+    /* ScanTime */
+    TIMEDATE tCurrentScanTime;
+
+    DBHANDLE hCurrentMailbox;
+};
+
+
 /* Globals */
 
 char  g_szVersion[40]       = {0};
@@ -201,15 +227,20 @@ size_t g_TranslogMaxLogExtend      = 0;
 WORD   g_wWriteDominoHealthStats   = 1;
 WORD   g_wCollectDominoTransStats  = 0;
 WORD   g_wCollectDominoIOStat      = 0;
+WORD   g_wCollectMailboxStats      = 0;
 WORD   g_ProbeCloseSession         = 0;
+WORD   g_MailBoxes                 = 0;
 
 TIMEDATE g_tNextTransStatsUpdate   = {0};
 TIMEDATE g_tNextIOStatUpdate       = {0};
+TIMEDATE g_tNextMailboxStatsUpdate = {0};
 TIMEDATE g_tMaintenanceStart       = {0};
 TIMEDATE g_tMaintenanceEnd         = {0};
 WORD     g_wMaintenanceEnabled     = 0;
 BOOL     g_bMaintenanceStartSet    = FALSE;
 BOOL     g_bMaintenanceEndSet      = FALSE;
+
+MAILBOX_STATS_TYPE g_MailboxStats = {0};
 
 #define MAX_CONFIG_VALUE_OVERRIDE 99
 
@@ -219,13 +250,14 @@ char g_DirSep = '\\';
 char g_DirSep = '/';
 #endif
 
-char  g_PromDelimChar       = ' ';
-WORD  g_ShutdownPending     = 0;
-WORD  g_wLogLevel           = 0;
-DWORD g_dwIntervalSec       = DOMPROM_DEFAULT_INTERVAL_SEC;
-DWORD g_dwTransIntervalSec  = DOMPROM_DEFAULT_TRANS_INTERVAL_SEC;
-DWORD g_dwIOStatIntervalSec = DOMPROM_DEFAULT_IOSTAT_INTERVAL_SEC;
-DWORD g_dwDAOSCatalogStatus = 0;
+char  g_PromDelimChar         = ' ';
+WORD  g_ShutdownPending       = 0;
+WORD  g_wLogLevel             = 0;
+DWORD g_dwIntervalSec         = DOMPROM_DEFAULT_INTERVAL_SEC;
+DWORD g_dwTransIntervalSec    = DOMPROM_DEFAULT_TRANS_INTERVAL_SEC;
+DWORD g_dwIOStatIntervalSec   = DOMPROM_DEFAULT_IOSTAT_INTERVAL_SEC;
+DWORD g_dwMboxStatIntervalSec = DOMPROM_DEFAULT_MBOX_INTERVAL_SEC;
+DWORD g_dwDAOSCatalogStatus   = 0;
 
 /* Helper list to process disk stats and write them separately (Totals and Free) */
 
@@ -250,6 +282,35 @@ static size_t g_DominoStatMax   = 0;
 #define DOMSTAT_DUPLICATE_SAME      1
 #define DOMSTAT_DUPLICATE_DIFFERENT 2
 
+
+#ifdef _WIN32
+
+
+uint64_t GetTimeMs(void)
+{
+    return (uint64_t)GetTickCount64();
+}
+
+#else
+
+
+uint64_t GetTimeMs(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+
+    return ((uint64_t)ts.tv_sec * 1000ULL) +
+           ((uint64_t)ts.tv_nsec / 1000000ULL);
+}
+
+#endif
+
+
+uint64_t GetTimeSec(void)
+{
+    return GetTimeMs() / 1000ULL;
+}
 
 void BeginDominoStatCollection()
 {
@@ -1307,8 +1368,12 @@ Done:
 
 STATUS GetServerPingLatency (const char *pszServerName, DWORD *retpdwMsec)
 {
-    STATUS error    = NOERROR;
-    DWORD  dwMsec   = 0;
+    STATUS error  = NOERROR;
+    DWORD  dwMsec = 0;
+    DWORD  dwIndex = 0;
+    DWORD  dwClientToServerMS = 0;
+    DWORD  dwServerToClientMS = 0;
+    WORD   wServerVersion     = 0;
 
     if (retpdwMsec)
         *retpdwMsec = 0;
@@ -1318,10 +1383,14 @@ STATUS GetServerPingLatency (const char *pszServerName, DWORD *retpdwMsec)
         return ERR_MISC_INVALID_ARGS;
     }
 
-    error = NSPingServer((char *) pszServerName, &dwMsec, NULL);
+    error = NSPingServer(const_cast<char *>(pszServerName), &dwIndex, NULL);
 
     if (error)
         goto Done;
+
+    error = NSFGetServerLatency((char *) pszServerName, 0, &dwClientToServerMS, &dwServerToClientMS, &wServerVersion);
+
+    dwMsec = dwClientToServerMS + dwServerToClientMS;
 
     if (retpdwMsec)
         *retpdwMsec = dwMsec;
@@ -1490,6 +1559,14 @@ STATUS LNCALLBACK DomExportTraverse (void *pContext, char *pszFacility, char *ps
             break;
 
         case VT_LONG:
+
+            if (0 == CompareCaseInsensitive (szMetric, "Server_MailBoxes"))
+            {
+                if (*(LONG *) pValue)
+                {
+                    g_MailBoxes = *(WORD *) pValue;
+                }
+            }
 
             pStats->CountLong++;
 
@@ -2280,6 +2357,270 @@ WORD IsInMaintenanceMode()
 }
 
 
+STATUS MailBoxSearchCallback(void *pParam, SEARCH_MATCH far *pSearchInfo, ITEM_TABLE far *pSummaryInfo)
+{
+    STATUS error = NOERROR;
+    MAILBOX_STATS_TYPE *pCtx = (MAILBOX_STATS_TYPE *)pParam;
+    SEARCH_MATCH SearchMatch = {0};
+
+    NOTEHANDLE hNote = NULLHANDLE;
+    TIMEDATE   tNoteAdded = {0};
+    LONG       lWaitSec   = 0;
+
+    if ((NULL == pSearchInfo) || (NULL == pParam))
+        return ERR_MISC_INVALID_ARGS;
+
+    if (NULL == pSearchInfo)
+        return ERR_MISC_INVALID_ARGS;
+
+    memcpy((char*)(&SearchMatch), (char *)pSearchInfo, sizeof (SEARCH_MATCH));
+
+    if (!(SearchMatch.SERetFlags & SE_FMATCH))
+        return(NOERROR);
+
+    if (!(SearchMatch.NoteClass & NOTE_CLASS_DOCUMENT))
+        return NOERROR;
+
+    if (NULLHANDLE == pCtx->hCurrentMailbox)
+    {
+        return ERR_MISC_INVALID_ARGS;
+    }
+
+    error = NSFNoteOpen (pCtx->hCurrentMailbox, SearchMatch.ID.NoteID, OPEN_SUMMARY, &hNote);
+
+    if (error)
+    {
+        /* Document can be deleted or just be gone */
+        return NOERROR;
+    }
+
+    NSFNoteGetInfo(hNote, _NOTE_ADDED_TO_FILE, &tNoteAdded);
+    NSFNoteClose (hNote);
+    hNote = NULLHANDLE;
+
+    lWaitSec = TimeDateDifference(&pCtx->tCurrentScanTime, &tNoteAdded);
+
+    if (lWaitSec < 0)
+        return NOERROR;
+
+    pCtx->total_wait_seconds += (uint64_t)lWaitSec;
+    pCtx->total_count++;
+
+    /* Buckets */
+    if (lWaitSec < 5 * 60)
+    {
+        pCtx->bucket_lt_5++;
+    }
+    else if (lWaitSec < 15 * 60)
+    {
+        pCtx->bucket_5_15++;
+    }
+    else if (lWaitSec < 60 * 60)
+    {
+        pCtx->bucket_15_60++;
+    }
+    else
+    {
+        pCtx->bucket_ge_60++;
+    }
+
+    return NOERROR;
+}
+
+
+void InitMailBoxStatsCtx(MAILBOX_STATS_TYPE *pCtx)
+{
+    memset(pCtx, 0, sizeof(MAILBOX_STATS_TYPE));
+    OSCurrentTIMEDATE(&pCtx->tCurrentScanTime);
+}
+
+
+STATUS ProcessOneMailBox(const char *pszMailBoxName, MAILBOX_STATS_TYPE *pMailboxStatsCtx, FORMULAHANDLE hFormula, TIMEDATE *ptStartTime)
+{
+    STATUS error = NOERROR;
+
+    if (IsNullStr(pszMailBoxName))
+        return ERR_MISC_INVALID_ARGS;
+
+    error = NSFDbOpen(pszMailBoxName, &(pMailboxStatsCtx->hCurrentMailbox));
+    if (error)
+    {
+        AddInLogMessageText("%s: Error opening: %s", error, g_szTask, pszMailBoxName);
+        goto Done;
+    }
+
+    error = NSFSearch(pMailboxStatsCtx->hCurrentMailbox,
+                      hFormula,
+                      NULL,
+                      0,
+                      NOTE_CLASS_DOCUMENT,
+                      ptStartTime,
+                      MailBoxSearchCallback,
+                      pMailboxStatsCtx,
+                      NULL);
+
+    if (error)
+    {
+        AddInLogMessageText("%s: Error searching: %s", error, g_szTask, pszMailBoxName);
+        goto Done;
+    }
+
+Done:
+
+    if (pMailboxStatsCtx->hCurrentMailbox)
+    {
+        NSFDbClose(pMailboxStatsCtx->hCurrentMailbox);
+        pMailboxStatsCtx->hCurrentMailbox = NULLHANDLE;
+    }
+
+    return error;
+}
+
+
+STATUS ProcessMailBoxStats (DWORD dwIntervalSeconds)
+{
+    STATUS  error = NOERROR;
+
+    WORD   wIdx        = 0;
+    WORD   wdc         = 0;
+    WORD   wFormulaLen = 0;
+
+    TIMEDATE tNow       = {0};
+    TIMEDATE tStartTime = {0};
+
+    char szMailBoxName[MAXPATH+1] = {0};
+
+    char szFormula[] =
+        "(DeliveryPriority != {L}) & "
+        "(!@IsAvailable($SendAt) & "
+        "(@AddedToThisFile <= @Adjust(@Now; 0; 0; 0; 0; -5; 0)))";
+
+    FORMULAHANDLE hFormula = NULLHANDLE;
+
+    uint64_t t64BeginMsec = 0;
+    uint64_t t64EndMsec   = 0;
+
+    OSCurrentTIMEDATE (&tNow);
+
+    if (0 == g_wCollectMailboxStats)
+        return NOERROR;
+
+    if (TimeDateCompare (&tNow, &g_tNextMailboxStatsUpdate) < 0)
+    {
+        return NOERROR;
+    }
+
+    OSCurrentTIMEDATE (&g_tNextMailboxStatsUpdate);
+    TimeDateAdjust(&g_tNextMailboxStatsUpdate, dwIntervalSeconds, 0, 0, 0, 0, 0);
+
+    OSCurrentTIMEDATE(&tStartTime);
+
+    /* Check only the last 72h */
+    TimeDateAdjust(&tStartTime, 0, 0, -72, 0, 0, 0);
+
+    if (0 == g_MailBoxes)
+        goto Done;
+
+    t64BeginMsec = GetTimeMs();
+
+    error = NSFFormulaCompile(NULL,
+                              0,
+                              szFormula,
+                              (WORD)strlen(szFormula),
+                              &hFormula,
+                              &wFormulaLen,
+                              &wdc,
+                              &wdc,
+                              &wdc,
+                              &wdc,
+                              &wdc);
+
+    if (error)
+    {
+        AddInLogMessageText("%s: Error compiling search formula", error, g_szTask);
+        hFormula = NULLHANDLE;
+        goto Done;
+    }
+
+    InitMailBoxStatsCtx(&g_MailboxStats);
+
+    if (1 == g_MailBoxes)
+    {
+        error = ProcessOneMailBox("mail.box", &g_MailboxStats, hFormula, &tStartTime);
+    }
+    else
+    {
+        for (wIdx = 1; wIdx <= g_MailBoxes; wIdx++)
+        {
+            snprintf(szMailBoxName, sizeof(szMailBoxName), "mail%u.box", wIdx);
+            error = ProcessOneMailBox(szMailBoxName, &g_MailboxStats, hFormula, &tStartTime);
+        }
+    }
+
+    t64EndMsec = GetTimeMs();
+    g_MailboxStats.MailBoxScanMsec = t64EndMsec - t64BeginMsec;
+
+Done:
+
+    if (hFormula)
+    {
+        OSMemFree(hFormula);
+        hFormula = NULLHANDLE;
+    }
+
+    return error;
+}
+
+
+STATUS WriteMailBoxStats(FILE *fp)
+{
+    STATUS error = NOERROR;
+    DWORD avg_lWaitSec = 0;
+
+    if (0 == g_wCollectMailboxStats)
+        return NOERROR;
+
+    if (g_MailboxStats.total_count > 0)
+    {
+        avg_lWaitSec = (DWORD)(g_MailboxStats.total_wait_seconds / g_MailboxStats.total_count);
+
+        WriteStatsEntryToFile(fp, g_szDominoHealth,
+            "mail_pending_avg_age_seconds",
+            "Average age of pending mail (seconds) in the mailbox waiting longer than 5 minutes",
+            avg_lWaitSec);
+    }
+
+    WriteStatsEntryToFile(fp, g_szDominoHealth,
+        "mailbox_check_errors",
+        "Documents which cannot be opened in mailbox when checking pending messages",
+        g_MailboxStats.error_count);
+
+    WriteTimedateStat (fp, "mailbox_check_timestamp", "Mailbox check last epoch time", &g_MailboxStats.tCurrentScanTime);
+
+    WriteStatsEntryToFileMSecToSeconds(fp, g_szDominoHealth,
+        "mailbox_check_time",
+        "Mailbox check time in seconds",
+        (DWORD) g_MailboxStats.MailBoxScanMsec);
+
+    WriteStatsEntryToFile(fp, g_szDominoHealth,
+        "mail_pending_age_5m_15m",
+        "Mailbox pending mail age 5–15 minutes",
+        g_MailboxStats.bucket_5_15);
+
+    WriteStatsEntryToFile(fp, g_szDominoHealth,
+        "mail_pending_age_15m_60m",
+        "Mailbox pending mail age 15–60 minutes",
+        g_MailboxStats.bucket_15_60);
+
+    WriteStatsEntryToFile(fp, g_szDominoHealth,
+        "mail_pending_age_ge_60m",
+        "Mailbox pending mail age >= 60 minutes",
+        g_MailboxStats.bucket_ge_60);
+
+    return error;
+}
+
+
 void WriteExporterCommonStats (FILE *fp)
 {
     char szTmp[MAXSPRINTF+1] = {0};
@@ -2344,8 +2685,6 @@ STATUS ProcessDominoStatistics (const char *pszFilename, bool bWriteShutdownStat
     }
 
     OSGetIntlSettings (&(Stats.Intl), sizeof (Stats.Intl));
-    snprintf (Stats.Intl.DecimalString,  sizeof (Stats.Intl.DecimalString), ".");
-    snprintf (Stats.Intl.ThousandString, sizeof (Stats.Intl.ThousandString), ",");
 
     WriteExporterCommonStats (Stats.fp);
 
@@ -2400,6 +2739,10 @@ STATUS ProcessDominoStatistics (const char *pszFilename, bool bWriteShutdownStat
     if (dwServerState < SERVER_STATE_RESTRICTED)
         WriteStatsEntryToFileMSecToSeconds (Stats.fp, g_szDominoHealth, "response_time_seconds", "Domino response time opening names.nsf over NRPC (seconds)", dwResponseTimeMsec);
 
+    ProcessDaosStats     (Stats.fp);
+    ProcessTranslogStats (Stats.fp);
+    ProcessDiskStats     (Stats.fp);
+    WriteMailBoxStats    (Stats.fp);
 
     /* Reset Domino statistics buffer for making sure we don't get a stat more than once */
     BeginDominoStatCollection();
@@ -2433,10 +2776,6 @@ STATUS ProcessDominoStatistics (const char *pszFilename, bool bWriteShutdownStat
                                   Stats.CountAll);
         }
     }
-
-    ProcessDaosStats     (Stats.fp);
-    ProcessTranslogStats (Stats.fp);
-    ProcessDiskStats     (Stats.fp);
 
 Done:
 
@@ -2505,6 +2844,18 @@ BOOL GetEnvironmentVars (BOOL bFirstTime)
         }
     }
 
+    if (g_wCollectMailboxStats < MAX_CONFIG_VALUE_OVERRIDE)
+    {
+        wValue = (WORD) OSGetEnvironmentLong (ENV_DOMPROM_COLLECT_MBOX_STATS);
+
+        if (g_wCollectMailboxStats != wValue)
+        {
+            AddInLogMessageText ("%s: Domino Mailbox pending mail statistics collection: %s", 0, g_szTask, wValue ? "enabled":"disabled");
+            g_wCollectMailboxStats = wValue;
+            bUpdated = TRUE;
+        }
+    }
+
     /* Check if intervals changed, check against boundaries, set and report changes */
 
     dwInterval = (DWORD) OSGetEnvironmentLong (ENV_DOMPROM_INTERVAL);
@@ -2525,6 +2876,8 @@ BOOL GetEnvironmentVars (BOOL bFirstTime)
         g_dwIntervalSec = dwInterval;
         bUpdated = TRUE;
     }
+
+    /* --- Domino Transaction Trace Settings --- */
 
     dwInterval = (DWORD) OSGetEnvironmentLong (ENV_DOMPROM_INTERVAL_TRANS);
 
@@ -2547,6 +2900,8 @@ BOOL GetEnvironmentVars (BOOL bFirstTime)
         bUpdated = TRUE;
     }
 
+    /* --- IOSTAT Settings --- */
+
     dwInterval = (DWORD) OSGetEnvironmentLong (ENV_DOMPROM_INTERVAL_IOSTAT);
 
     if (0 == dwInterval)
@@ -2568,9 +2923,34 @@ BOOL GetEnvironmentVars (BOOL bFirstTime)
         bUpdated = TRUE;
     }
 
+    /* --- Mailbox Monitoring --- */
+
+    dwInterval = (DWORD) OSGetEnvironmentLong (ENV_DOMPROM_INTERVAL_MAILBOX);
+
+    if (0 == dwInterval)
+    {
+        dwInterval = DOMPROM_DEFAULT_MBOX_INTERVAL_SEC;
+    }
+
+    if (dwInterval < DOMPROM_MINIMUM_MAILBOX_INTERVAL_SEC)
+        dwInterval = DOMPROM_MINIMUM_MAILBOX_INTERVAL_SEC;
+
+    if (g_dwMboxStatIntervalSec != dwInterval)
+    {
+        if (false == bFirstTime)
+        {
+            AddInLogMessageText ("%s: Changed %s from %u to %u", 0, g_szTask, ENV_DOMPROM_INTERVAL_MAILBOX, g_dwMboxStatIntervalSec, dwInterval);
+        }
+
+        g_dwMboxStatIntervalSec = dwInterval;
+        bUpdated = TRUE;
+    }
+
+    /* --- Maintenance and status settings --- */
+
     g_bMaintenanceStartSet = OSGetEnvironmentTIMEDATE (ENV_DOMPROM_MAINTENANCE_START, &g_tMaintenanceStart);
     g_bMaintenanceEndSet   = OSGetEnvironmentTIMEDATE (ENV_DOMPROM_MAINTENANCE_END,   &g_tMaintenanceEnd);
-    g_ProbeCloseSession = (WORD)  OSGetEnvironmentLong (ENV_DOMPROM_PROBE_CLOSE_SESSION);
+    g_ProbeCloseSession    = (WORD)  OSGetEnvironmentLong (ENV_DOMPROM_PROBE_CLOSE_SESSION);
     g_wServerRestricted    = (WORD)  OSGetEnvironmentLong ("SERVER_RESTRICTED");
     g_dwDAOSCatalogStatus  = (DWORD) OSGetEnvironmentLong ("DAOSCATALOGSTATE");
     g_StatusDAOS           = (DWORD) OSGetEnvironmentLong ("DAOSENABLE");
@@ -2750,6 +3130,12 @@ void PrintConfig()
         snprintf (szBuffer, sizeof (szBuffer), "I/O Stats   Interval :  %3u seconds)", g_dwIOStatIntervalSec);
     else
         snprintf (szBuffer, sizeof (szBuffer), "I/O Stats   Interval :  -Disabled-)");
+    AddInLogMessageText ("%s", 0, szBuffer);
+
+    if (g_wCollectMailboxStats)
+        snprintf (szBuffer, sizeof (szBuffer), "Mbox Stats  Interval :  %3u seconds)", g_dwMboxStatIntervalSec);
+    else
+        snprintf (szBuffer, sizeof (szBuffer), "Mbox Stats  Interval :  -Disabled-)");
     AddInLogMessageText ("%s", 0, szBuffer);
 
     AddInLogMessageText ("Statistics File      :  %s", 0, g_szStatsFilename);
@@ -3095,6 +3481,7 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
 
     OSCurrentTIMEDATE (&g_tNextTransStatsUpdate);
     OSCurrentTIMEDATE (&g_tNextIOStatUpdate);
+    OSCurrentTIMEDATE (&g_tNextMailboxStatsUpdate);
     OSGetDataDirectory (g_szDataDir);
 
     for (a=1; a<argc; a++)
@@ -3127,6 +3514,10 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
 
                 case 'i':
                     g_wCollectDominoIOStat = MAX_CONFIG_VALUE_OVERRIDE;
+                    break;
+
+                case 'm':
+                    g_wCollectMailboxStats = MAX_CONFIG_VALUE_OVERRIDE;
                     break;
 
                 case 'x':
@@ -3286,6 +3677,11 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
         AddInLogMessageText ("%s: Domino I/O Statistic Interval: %u", 0, g_szTask, g_dwIOStatIntervalSec);
     }
 
+    if (g_wCollectMailboxStats)
+    {
+        AddInLogMessageText ("%s: Mailbox Statistic Interval: %u", 0, g_szTask, g_dwMboxStatIntervalSec);
+    }
+
     AddInLogMessageText ("%s: %s (%s)", 0, g_szTask, g_szCopyright, g_szGitHubURL);
 
     ReadStatisticsInfoFromEvents4();
@@ -3295,13 +3691,17 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
     while (0 == g_ShutdownPending)
     {
         AddInSetStatusText ("Collecting Stats");
-        error = ProcessDominoStatistics (g_szStatsFilename);
 
         if (g_wCollectDominoTransStats)
             ProcessTransStats (g_szTransFilename, g_dwTransIntervalSec);
 
         if (g_wCollectDominoIOStat)
             ProcessIOStat (g_dwIOStatIntervalSec);
+
+        if (g_wCollectMailboxStats)
+            ProcessMailBoxStats (g_dwMboxStatIntervalSec);
+
+        error = ProcessDominoStatistics (g_szStatsFilename);
 
         UpdateIdleStatus();
 
