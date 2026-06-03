@@ -1,7 +1,7 @@
 /*
 ###########################################################################
 # Domino Prometheus Exporter                                              #
-# Version 1.0.7 25.04.2026                                                #
+# Version 1.0.8 03.06.2026                                                #
 # (C) Copyright Daniel Nashed/Nash!Com 2024-2026                          #
 #                                                                         #
 # Licensed under the Apache License, Version 2.0 (the "License");         #
@@ -26,7 +26,7 @@
 
 #define DOMPROM_VERSION_MAJOR 1
 #define DOMPROM_VERSION_MINOR 0
-#define DOMPROM_VERSION_PATCH 7
+#define DOMPROM_VERSION_PATCH 8
 
 #define DOMPROM_VERSION_BUILD (DOMPROM_VERSION_MAJOR * 10000 +  DOMPROM_VERSION_MINOR * 100 + DOMPROM_VERSION_PATCH)
 
@@ -777,8 +777,10 @@ uint64_t TimeDateToEpoch (const TIMEDATE* pTimeDate)
     struct tm utc_tm = {};
 
     t.GM = *pTimeDate;
+    t.zone = 0;
+    t.dst  = 0;
 
-    if (TimeGMToLocal (&t))
+    if (TimeGMToLocalZone (&t))
     {
         return 0;
     }
@@ -2580,15 +2582,15 @@ STATUS WriteMailBoxStats(FILE *fp)
     if (0 == g_wCollectMailboxStats)
         return NOERROR;
 
-    if (g_MailboxStats.total_count > 0)
-    {
+    if (0 == g_MailboxStats.total_count)
+        avg_lWaitSec = 0;
+    else
         avg_lWaitSec = (DWORD)(g_MailboxStats.total_wait_seconds / g_MailboxStats.total_count);
 
-        WriteStatsEntryToFile(fp, g_szDominoHealth,
-            "mail_pending_avg_age_seconds",
-            "Average age of pending mail (seconds) in the mailbox waiting longer than 5 minutes",
-            avg_lWaitSec);
-    }
+    WriteStatsEntryToFile(fp, g_szDominoHealth,
+        "mail_pending_avg_age_seconds",
+        "Average age of pending mail (seconds) in the mailbox waiting longer than 5 minutes",
+        avg_lWaitSec);
 
     WriteStatsEntryToFile(fp, g_szDominoHealth,
         "mailbox_check_errors",
@@ -3083,6 +3085,7 @@ void PrintHelp()
     AddInLogMessageText ("-v        Verbose logging", 0);
     AddInLogMessageText ("-t        Write transactions via 'show trans'", 0);
     AddInLogMessageText ("-i        Collect Domino IOSTAT via 'show iostat'", 0);
+    AddInLogMessageText ("-m        Collect additional mail.box statistics", 0);
     AddInLogMessageText ("-version  Print version", 0);
     AddInLogMessageText ("--version Print version Linux style", 0);
 
@@ -3093,9 +3096,11 @@ void PrintHelp()
     AddInLogMessageText ("domprom_loglevel          Verbose logging", 0);
     AddInLogMessageText ("domprom_collect_trans     Enable collecting transactions via 'show trans' output", 0);
     AddInLogMessageText ("domprom_collect_iostat    Enable collecting Domino IOSTAT data via 'show iostat'", 0);
+    AddInLogMessageText ("domprom_collect_mailbox   Enable collecting additional mail.box stats", 0);
     AddInLogMessageText ("domprom_interval          Interval to collect stats in seconds (default: %u)", 0, DOMPROM_DEFAULT_INTERVAL_SEC);
     AddInLogMessageText ("domprom_interval_trans    Interval to collect transactions in seconds (default: %u)", 0, DOMPROM_DEFAULT_TRANS_INTERVAL_SEC);
     AddInLogMessageText ("domprom_interval_iostat   Interval to collect Domino IOSTAT data in seconds (default: %u)", 0, DOMPROM_DEFAULT_IOSTAT_INTERVAL_SEC);
+    AddInLogMessageText ("domprom_interval_mailbox  Interval to collect additional mail.box statistics in seconds (default: %u)", 0, DOMPROM_DEFAULT_MBOX_INTERVAL_SEC);
     AddInLogMessageText ("domprom_outdir            Statistics directory for *.prom files (default: <notesdata>/domino/stats", 0);
     AddInLogMessageText ("domprom_outfile           Override Domino Stats file (default: %s)", 0, g_szDominoProm);
     AddInLogMessageText ("domprom_trans_outfile     Override Domino Transactions Stats file (default: %s)", 0, g_szDominoTransProm);
