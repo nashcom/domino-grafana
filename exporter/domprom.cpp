@@ -49,6 +49,14 @@
 #define ENV_DOMPROM_MAINTENANCE_END      "domprom_maintenance_end"
 #define ENV_DOMPROM_PROBE_CLOSE_SESSION  "domprom_probe_close_session"
 
+#define ENV_DOMPROM_BUSINESSDAYS_ENABLED "domprom_businessdays_enabled"
+#define ENV_DOMPROM_BUSINESSDAYS         "domprom_businessdays"
+#define ENV_DOMPROM_BUSINESSHOURS        "domprom_businesshours"
+#define ENV_DOMPROM_BUSINESSHOURS_ZONE   "domprom_businesshours_zone"
+#define ENV_DOMPROM_BUSINESSHOURS_DST    "domprom_businesshours_dst"
+
+#define DOMPROM_DEFAULT_BUSINESSHOURS    "6-18"
+
 /* OS Level stats directory for container images */
 #define OSENV_DOMPROM_STATS_DIR       "DOMINO_PROM_STATS_DIR"
 
@@ -78,6 +86,8 @@
 
 #define MAX_STAT_DESC  2048
 #define MAX_STAT_NAME   120
+
+#define MAX_WEEKDAYS 7
 
 #define sizeofstring(x) (sizeof (x) - 1)
 
@@ -139,8 +149,8 @@
 
 #ifdef _WIN32
   #define strcasecmp _stricmp
+  #define strtok_r strtok_s
 #endif
-
 
 /* Types */
 
@@ -187,6 +197,35 @@ struct MAILBOX_STATS_TYPE
 
     DBHANDLE hCurrentMailbox;
 };
+
+
+typedef struct
+{
+    BOOL bIsBusinessDay;
+
+    int StartHour;
+    int StartMinute;
+    int StartSecond;
+
+    int EndHour;
+    int EndMinute;
+    int EndSecond;
+
+    int StartSeconds;
+    int EndSeconds;
+
+} BUSINESS_HOURS_TYPE;
+
+
+typedef struct
+{
+    BOOL bBusinessHoursEnabled;
+
+    LONG lZone;
+    LONG lDST;
+    BUSINESS_HOURS_TYPE Days[MAX_WEEKDAYS];
+
+} BUSINESS_DAYS_TYPE;
 
 
 /* Globals */
@@ -239,6 +278,12 @@ TIMEDATE g_tMaintenanceEnd         = {0};
 WORD     g_wMaintenanceEnabled     = 0;
 BOOL     g_bMaintenanceStartSet    = FALSE;
 BOOL     g_bMaintenanceEndSet      = FALSE;
+
+BOOL g_bBusinessHoursEnabled = FALSE;
+BOOL g_bBusinessDay          = TRUE;
+BOOL g_bBusinessHours        = TRUE;
+
+BUSINESS_DAYS_TYPE g_BusinessHours = {0};
 
 MAILBOX_STATS_TYPE g_MailboxStats = {0};
 
@@ -311,6 +356,26 @@ uint64_t GetTimeSec(void)
 {
     return GetTimeMs() / 1000ULL;
 }
+
+
+BOOL GetEnviromentLong (const char *pszName, LONG *retplValue)
+{
+    char szEnvValue [MAXSPRINTF+1] = {0};
+
+    if (retplValue)
+        *retplValue = 0;
+
+    if (FALSE == OSGetEnvironmentString ("", szEnvValue, sizeof (szEnvValue)-1))
+        return FALSE;
+
+    if (retplValue)
+    {
+        *retplValue = atoi (szEnvValue);
+    }
+
+    return TRUE;
+}
+
 
 void BeginDominoStatCollection()
 {
@@ -2653,6 +2718,373 @@ void WriteExporterCommonStats (FILE *fp)
 }
 
 
+
+int TimeToSeconds(int Hour, int Minute, int Second)
+{
+    return (Hour * 3600) + (Minute * 60) + Second;
+}
+
+
+BOOL ReadBusinessDays(BUSINESS_DAYS_TYPE &BusinessHours)
+{
+    BOOL bValid = TRUE;
+    char szBusinessDays[MAXSPRINTF+1] = {0};
+    char *pszToken = NULL;
+    char *pszNext  = NULL;
+
+    int StartDay = 0;
+    int EndDay   = 0;
+    int Day      = 0;
+
+    memset(&BusinessHours, 0, sizeof(BusinessHours));
+
+    if (OSGetEnvironmentString(ENV_DOMPROM_BUSINESSDAYS, szBusinessDays, sizeof(szBusinessDays)-1))
+    {
+        g_bBusinessHoursEnabled = TRUE;
+    }
+    else
+    {
+        if (0 == OSGetEnvironmentLong (ENV_DOMPROM_BUSINESSDAYS_ENABLED))
+        {
+            g_bBusinessHoursEnabled = FALSE;
+            return TRUE;
+        }
+
+        g_bBusinessHoursEnabled = TRUE;
+
+        /* Default: Monday-Friday */
+        BusinessHours.Days[1].bIsBusinessDay = TRUE;
+        BusinessHours.Days[2].bIsBusinessDay = TRUE;
+        BusinessHours.Days[3].bIsBusinessDay = TRUE;
+        BusinessHours.Days[4].bIsBusinessDay = TRUE;
+        BusinessHours.Days[5].bIsBusinessDay = TRUE;
+
+        if (g_wLogLevel)
+        {
+            AddInLogMessageText("%s: Notes.ini [Days] not found - using default Mon-Fri", 0, g_szTask);
+        }
+
+        return TRUE;
+    }
+
+    pszToken = strtok_r(szBusinessDays, ",", &pszNext);
+
+    while (pszToken)
+    {
+        /* Range: 1-5 */
+        if (strchr(pszToken, '-'))
+        {
+            if (2 != sscanf(pszToken, "%d-%d", &StartDay, &EndDay))
+            {
+                bValid = FALSE;
+            }
+            else if ((StartDay < 0) || (StartDay > 6) || (EndDay < 0) || (EndDay > 6))
+            {
+                bValid = FALSE;
+            }
+            else
+            {
+                Day = StartDay;
+
+                while (TRUE)
+                {
+                    BusinessHours.Days[Day].bIsBusinessDay = TRUE;
+
+                    if (Day == EndDay)
+                        break;
+
+                    Day++;
+
+                    if (Day > 6)
+                        Day = 0;
+                }
+            }
+        }
+        else
+        {
+            /* Single day */
+            if (1 != sscanf(pszToken, "%d", &Day))
+            {
+                bValid = FALSE;
+            }
+            else if ((Day < 0) || (Day > 6))
+            {
+                bValid = FALSE;
+            }
+            else
+            {
+                BusinessHours.Days[Day].bIsBusinessDay = TRUE;
+            }
+        }
+
+        pszToken = strtok_r(NULL, ",", &pszNext);
+    }
+
+    return bValid;
+}
+
+
+BOOL ReadBusinesHours (BUSINESS_DAYS_TYPE &BusinessHours)
+{
+    BOOL bValid = TRUE;
+    char szEnvName [MAXSPRINTF+1]     = {0};
+    char szBusinessHours[MAXSPRINTF+1]= {0};
+    char szDefaultBusinessHours[MAXSPRINTF+1]= {0};
+    char *pszBusinessHours = szDefaultBusinessHours;
+
+    LONG lWeekDay  = 0;
+    TIMEDATE tNow  = {0};
+    TIME NotesTime = {0};
+
+    if (FALSE == ReadBusinessDays(BusinessHours))
+        bValid = FALSE;
+
+    OSCurrentTIMEDATE (&tNow);
+
+    memcpy (&(NotesTime.GM), &tNow, sizeof (TIMEDATE));
+
+    if (TimeGMToLocal (&NotesTime))
+    {
+        AddInLogMessageText ("%s: Cannot convert time", 0, g_szTask);
+        bValid = FALSE;
+    }
+
+    if (FALSE == GetEnviromentLong (ENV_DOMPROM_BUSINESSHOURS_ZONE, &BusinessHours.lZone))
+    {
+        BusinessHours.lZone = NotesTime.zone;
+    }
+
+    if (FALSE == GetEnviromentLong (ENV_DOMPROM_BUSINESSHOURS_DST, &BusinessHours.lDST))
+    {
+        BusinessHours.lDST = NotesTime.dst;
+    }
+
+    NotesTime.zone = BusinessHours.lZone;
+    NotesTime.dst  = BusinessHours.lDST;
+
+    if (TimeGMToLocalZone (&NotesTime))
+    {
+        AddInLogMessageText ("%s: Cannot convert time", 0, g_szTask);
+        bValid = FALSE;
+    }
+
+    /* Notes Weekday starts at 1 */
+    if ((NotesTime.weekday < 1) || (NotesTime.weekday > 7))
+    {
+        AddInLogMessageText ("%s: Invalid Week day: %d", 0, g_szTask, NotesTime.weekday);
+        bValid = FALSE;
+    }
+
+    /* Get default business hours */
+    if (FALSE == OSGetEnvironmentString (ENV_DOMPROM_BUSINESSHOURS, szDefaultBusinessHours, sizeof (szDefaultBusinessHours)-1))
+    {
+        snprintf (szDefaultBusinessHours, sizeof (szDefaultBusinessHours), "%s", DOMPROM_DEFAULT_BUSINESSHOURS);
+
+        if (g_wLogLevel)
+        {
+            AddInLogMessageText ("%s: Notes.ini %s=%s", 0, g_szTask, ENV_DOMPROM_BUSINESSHOURS, szBusinessHours);
+        }
+    }
+
+    /* Normalize to Unix weekday: 0 = Sunday, 6 = Saturday */
+    for (lWeekDay = 0; lWeekDay < MAX_WEEKDAYS; lWeekDay++)
+    {
+        snprintf (szEnvName, sizeof (szEnvName), "%s%d", ENV_DOMPROM_BUSINESSHOURS, lWeekDay);
+
+        if (OSGetEnvironmentString (szEnvName, szBusinessHours, sizeof (szBusinessHours)-1))
+        {
+            /* Found */
+            pszBusinessHours = szBusinessHours;
+        }
+        else
+        {
+            /* Use default if not found */
+            pszBusinessHours = szDefaultBusinessHours;
+
+            if (g_wLogLevel)
+            {
+                AddInLogMessageText ("%s: Notes.ini [%s] not found", 0, g_szTask, szEnvName);
+            }
+        }
+
+        if (IsNullStr (pszBusinessHours))
+        {
+            continue;
+        }
+
+        /* Format: hh:mm:ss-hh:mm:ss */
+        if (6 != sscanf (pszBusinessHours, "%d:%d:%d-%d:%d:%d",
+            &BusinessHours.Days[lWeekDay].StartHour,
+            &BusinessHours.Days[lWeekDay].StartMinute,
+            &BusinessHours.Days[lWeekDay].StartSecond,
+            &BusinessHours.Days[lWeekDay].EndHour,
+            &BusinessHours.Days[lWeekDay].EndMinute,
+            &BusinessHours.Days[lWeekDay].EndSecond))
+        {
+            BusinessHours.Days[lWeekDay].StartSecond = 0;
+            BusinessHours.Days[lWeekDay].EndSecond   = 0;
+
+            /* Format: hh:mm-hh:mm */
+            if (4 != sscanf (pszBusinessHours, "%d:%d-%d:%d",
+                &BusinessHours.Days[lWeekDay].StartHour,
+                &BusinessHours.Days[lWeekDay].StartMinute,
+                &BusinessHours.Days[lWeekDay].EndHour,
+                &BusinessHours.Days[lWeekDay].EndMinute))
+            {
+                BusinessHours.Days[lWeekDay].StartMinute = 0;
+                BusinessHours.Days[lWeekDay].StartSecond = 0;
+                BusinessHours.Days[lWeekDay].EndMinute   = 0;
+                BusinessHours.Days[lWeekDay].EndSecond   = 0;
+
+                /* Format: hh-hh */
+                if (2 != sscanf (pszBusinessHours, "%d-%d",
+                        &BusinessHours.Days[lWeekDay].StartHour,
+                        &BusinessHours.Days[lWeekDay].EndHour))
+                {
+                    AddInLogMessageText ("%s: Invalid business hours configuration [%s]: [%s]", 0, g_szTask, szEnvName, pszBusinessHours);
+                    bValid = FALSE;
+                }
+            }
+        }
+
+        BusinessHours.Days[lWeekDay].StartSeconds = TimeToSeconds (
+            BusinessHours.Days[lWeekDay].StartHour,
+            BusinessHours.Days[lWeekDay].StartMinute,
+            BusinessHours.Days[lWeekDay].StartSecond);
+
+        BusinessHours.Days[lWeekDay].EndSeconds = TimeToSeconds (
+            BusinessHours.Days[lWeekDay].EndHour,
+            BusinessHours.Days[lWeekDay].EndMinute,
+            BusinessHours.Days[lWeekDay].EndSecond);
+    } /* for */
+
+    if (g_wLogLevel)
+    {
+        for (lWeekDay = 0; lWeekDay < MAX_WEEKDAYS; lWeekDay++)
+        {
+            AddInLogMessageText ("%s: BusinessHours[%d]: %02d:%02d:%02d - %02d:%02d:%02d, BusinessDay: %d", 0, g_szTask,
+                lWeekDay,
+                BusinessHours.Days[lWeekDay].StartHour,
+                BusinessHours.Days[lWeekDay].StartMinute,
+                BusinessHours.Days[lWeekDay].StartSecond,
+                BusinessHours.Days[lWeekDay].EndHour,
+                BusinessHours.Days[lWeekDay].EndMinute,
+                BusinessHours.Days[lWeekDay].EndSecond,
+                BusinessHours.Days[lWeekDay].bIsBusinessDay);
+        }
+    }
+
+    return bValid;
+}
+
+
+BOOL CheckBusinessHours (TIMEDATE *ptNow)
+{
+    TIME   NotesTime = {0};
+    LONG   lWeekDay  = 0;
+    int    CurrentSeconds = 0;
+
+    TIMEDATE tNow = {0};
+    char szNow [MAXALPHATIMEDATE+1] = {0};
+
+    if (FALSE == g_bBusinessHoursEnabled)
+    {
+        g_bBusinessDay   = TRUE;
+        g_bBusinessHours = TRUE;
+        goto Done;
+    }
+
+    if (NULL == ptNow)
+    {
+        OSCurrentTIMEDATE (&tNow);
+        ptNow = &tNow;
+    }
+
+    GetNotesTimeDateSting (ptNow, sizeof (szNow), szNow);
+
+    memcpy (&(NotesTime.GM), ptNow, sizeof (TIMEDATE));
+
+    NotesTime.zone = g_BusinessHours.lZone;
+    NotesTime.dst  = g_BusinessHours.lDST;
+
+    if (TimeGMToLocalZone (&NotesTime))
+    {
+        AddInLogMessageText ("%s: Cannot convert time", 0, g_szTask);
+        goto Done;
+    }
+
+    if ((NotesTime.weekday < 1) || (NotesTime.weekday > 7))
+    {
+        g_bBusinessDay   = TRUE;
+        g_bBusinessHours = TRUE;
+        goto Done;
+    }
+
+    lWeekDay = NotesTime.weekday-1;
+
+    if (g_wLogLevel)
+        AddInLogMessageText ("%s: UNIX WeekDay: %d", 0, g_szTask, lWeekDay);
+
+    CurrentSeconds = TimeToSeconds (NotesTime.hour, NotesTime.minute, NotesTime.second);
+
+    if (FALSE == g_BusinessHours.Days[lWeekDay].bIsBusinessDay)
+    {
+        if (g_wLogLevel)
+            AddInLogMessageText ("%s: Not a work day", 0, g_szTask);
+
+        g_bBusinessDay   = FALSE;
+        g_bBusinessHours = FALSE;
+        goto Done;
+    }
+    else
+    {
+        g_bBusinessDay = TRUE;
+    }
+
+    if (g_BusinessHours.Days[lWeekDay].StartSeconds <= g_BusinessHours.Days[lWeekDay].EndSeconds)
+    {
+        if ( (CurrentSeconds < g_BusinessHours.Days[lWeekDay].StartSeconds) ||
+             (CurrentSeconds > g_BusinessHours.Days[lWeekDay].EndSeconds))
+        {
+            if (g_wLogLevel)
+                AddInLogMessageText ("%s: Not in range (%d [%d - %d])", 0, g_szTask,
+                    CurrentSeconds, g_BusinessHours.Days[lWeekDay].StartSeconds, g_BusinessHours.Days[lWeekDay].EndSeconds);
+
+            g_bBusinessHours = FALSE;
+            goto Done;
+        }
+    }
+    else
+    {
+        if ( (CurrentSeconds < g_BusinessHours.Days[lWeekDay].StartSeconds) &&
+             (CurrentSeconds > g_BusinessHours.Days[lWeekDay].EndSeconds))
+        {
+            if (g_wLogLevel)
+                AddInLogMessageText ("%s: Not in range (%d [%d - %d])", 0, g_szTask,
+                    CurrentSeconds, g_BusinessHours.Days[lWeekDay].StartSeconds, g_BusinessHours.Days[lWeekDay].EndSeconds);
+
+            g_bBusinessHours = FALSE;
+            goto Done;
+        }
+    }
+
+    g_bBusinessHours = TRUE;
+
+Done:
+
+    return g_bBusinessHours;
+}
+
+
+STATUS ProcessBusinesHours(FILE *fp)
+{
+    CheckBusinessHours(NULL);
+    WriteStatsEntryToFile (fp, g_szDominoHealth, "business_day",   "Domino Business Day (0 = Not a business day, 1 = Business day)",           g_bBusinessDay);
+    WriteStatsEntryToFile (fp, g_szDominoHealth, "business_hours", "Domino Business Hours (0 = Not in business hours, 1 = In business hours)", g_bBusinessHours);
+    return NOERROR;
+}
+
+
 STATUS ProcessDominoStatistics (const char *pszFilename, bool bWriteShutdownStats = false)
 {
     STATUS   error       = NOERROR;
@@ -2745,6 +3177,7 @@ STATUS ProcessDominoStatistics (const char *pszFilename, bool bWriteShutdownStat
     ProcessTranslogStats (Stats.fp);
     ProcessDiskStats     (Stats.fp);
     WriteMailBoxStats    (Stats.fp);
+    ProcessBusinesHours  (Stats.fp);
 
     /* Reset Domino statistics buffer for making sure we don't get a stat more than once */
     BeginDominoStatCollection();
@@ -2957,6 +3390,8 @@ BOOL GetEnvironmentVars (BOOL bFirstTime)
     g_dwDAOSCatalogStatus  = (DWORD) OSGetEnvironmentLong ("DAOSCATALOGSTATE");
     g_StatusDAOS           = (DWORD) OSGetEnvironmentLong ("DAOSENABLE");
 
+    ReadBusinesHours(g_BusinessHours);
+
     if (bUpdated)
     {
         /* Update idle message */
@@ -3082,29 +3517,36 @@ void PrintHelp()
     AddInLogMessageText ("Parameters", 0);
     AddInLogMessageText ("---------------------", 0);
 
-    AddInLogMessageText ("-v        Verbose logging", 0);
-    AddInLogMessageText ("-t        Write transactions via 'show trans'", 0);
-    AddInLogMessageText ("-i        Collect Domino IOSTAT via 'show iostat'", 0);
-    AddInLogMessageText ("-m        Collect additional mail.box statistics", 0);
-    AddInLogMessageText ("-version  Print version", 0);
-    AddInLogMessageText ("--version Print version Linux style", 0);
+    AddInLogMessageText ("-v         Verbose logging", 0);
+    AddInLogMessageText ("-t         Write transactions via 'show trans'", 0);
+    AddInLogMessageText ("-i         Collect Domino IOSTAT via 'show iostat'", 0);
+    AddInLogMessageText ("-m         Collect additional mail.box statistics", 0);
+    AddInLogMessageText ("-version   Print version", 0);
+    AddInLogMessageText ("--version  Print version Linux style", 0);
 
     AddInLogMessageText ("", 0);
     AddInLogMessageText ("Environment variables", 0);
     AddInLogMessageText ("---------------------", 0);
 
-    AddInLogMessageText ("domprom_loglevel          Verbose logging", 0);
-    AddInLogMessageText ("domprom_collect_trans     Enable collecting transactions via 'show trans' output", 0);
-    AddInLogMessageText ("domprom_collect_iostat    Enable collecting Domino IOSTAT data via 'show iostat'", 0);
-    AddInLogMessageText ("domprom_collect_mailbox   Enable collecting additional mail.box stats", 0);
-    AddInLogMessageText ("domprom_interval          Interval to collect stats in seconds (default: %u)", 0, DOMPROM_DEFAULT_INTERVAL_SEC);
-    AddInLogMessageText ("domprom_interval_trans    Interval to collect transactions in seconds (default: %u)", 0, DOMPROM_DEFAULT_TRANS_INTERVAL_SEC);
-    AddInLogMessageText ("domprom_interval_iostat   Interval to collect Domino IOSTAT data in seconds (default: %u)", 0, DOMPROM_DEFAULT_IOSTAT_INTERVAL_SEC);
-    AddInLogMessageText ("domprom_interval_mailbox  Interval to collect additional mail.box statistics in seconds (default: %u)", 0, DOMPROM_DEFAULT_MBOX_INTERVAL_SEC);
-    AddInLogMessageText ("domprom_outdir            Statistics directory for *.prom files (default: <notesdata>/domino/stats", 0);
-    AddInLogMessageText ("domprom_outfile           Override Domino Stats file (default: %s)", 0, g_szDominoProm);
-    AddInLogMessageText ("domprom_trans_outfile     Override Domino Transactions Stats file (default: %s)", 0, g_szDominoTransProm);
-    AddInLogMessageText ("domprom_no_domino_prefix  Disable the new 'Domino_' prefix ", 0);
+    AddInLogMessageText ("domprom_loglevel              Verbose logging", 0);
+    AddInLogMessageText ("domprom_collect_trans         Enable collecting transactions via 'show trans' output", 0);
+    AddInLogMessageText ("domprom_collect_iostat        Enable collecting Domino IOSTAT data via 'show iostat'", 0);
+    AddInLogMessageText ("domprom_collect_mailbox       Enable collecting additional mail.box stats", 0);
+    AddInLogMessageText ("domprom_interval              Interval to collect stats in seconds (default: %u)", 0, DOMPROM_DEFAULT_INTERVAL_SEC);
+    AddInLogMessageText ("domprom_interval_trans        Interval to collect transactions in seconds (default: %u)", 0, DOMPROM_DEFAULT_TRANS_INTERVAL_SEC);
+    AddInLogMessageText ("domprom_interval_iostat       Interval to collect Domino IOSTAT data in seconds (default: %u)", 0, DOMPROM_DEFAULT_IOSTAT_INTERVAL_SEC);
+    AddInLogMessageText ("domprom_interval_mailbox      Interval to collect additional mail.box statistics in seconds (default: %u)", 0, DOMPROM_DEFAULT_MBOX_INTERVAL_SEC);
+    AddInLogMessageText ("domprom_outdir                Statistics directory for *.prom files (default: <notesdata>/domino/stats", 0);
+    AddInLogMessageText ("domprom_outfile               Override Domino Stats file (default: %s)", 0, g_szDominoProm);
+    AddInLogMessageText ("domprom_trans_outfile         Override Domino Transactions Stats file (default: %s)", 0, g_szDominoTransProm);
+    AddInLogMessageText ("domprom_no_domino_prefix      Disable the new 'Domino_' prefix ", 0);
+    AddInLogMessageText ("domprom_businessdays_enabled  Enable main business time monitoring (1=enabled)", 0);
+    AddInLogMessageText ("domprom_businessdays          Business days using Unix weekday format (0-6)", 0);
+    AddInLogMessageText ("domprom_businesshours         Default business hours for days without specific setting (default: %s)", 0, DOMPROM_DEFAULT_BUSINESSHOURS);
+    AddInLogMessageText ("domprom_businesshours0-6      Configure business hours for a specific weekday (0=Sun, 6=Sat)", 0);
+    AddInLogMessageText ("domprom_businesshours_zone    Configure Domino timezone offset used for business hour evaluation", 0);
+    AddInLogMessageText ("domprom_businesshours_dst     Configure Domino DST setting used for business hour evaluation", 0);
+
     AddInLogMessageText ("", 0);
 }
 
@@ -3562,6 +4004,8 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
 
     } /* for */
 
+    ReadBusinesHours(g_BusinessHours);
+
     error = MQCreate (MsgQueueName, 0, 0);
 
     if (error)
@@ -3719,7 +4163,7 @@ STATUS LNPUBLIC AddInMain (HMODULE hResourceModule, int argc, char *argv[])
             }
 
             /* Don't check environment vars too often */
-            if ( 0 == (dwSeconds % 10))
+            if ( 0 == (dwSeconds % 30))
                 GetEnvironmentVars (FALSE);
 
             if (AddInIdleDelay (1000))
