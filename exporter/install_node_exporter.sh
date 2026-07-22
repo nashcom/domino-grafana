@@ -128,8 +128,36 @@ if [ "$INSTALL_MODE" = "update" ]; then
 fi
 
 cp $SYSTEMD_FILE $SYSTEMD_FILEPATH
-chown root:root $SYSTEMD_FILEPATH
-chmod 644 $SYSTEMD_FILEPATH
+
+cat > "$SYSTEMD_FILEPATH" <<'EOF'
+###########################################################################
+# Prometheus Node Exporter systemd service
+# Version 1.0.3 (2026-07-22)
+#
+# Copyright (c) 2024-2026 Daniel Nashed / NashCom
+# SPDX-License-Identifier: Apache-2.0
+###########################################################################
+
+[Unit]
+Description=Prometheus Node Exporter
+After=network.target
+
+[Service]
+Type=exec
+User=notes
+
+# Default directory for textfile collector (.prom files)
+ExecStart=/usr/local/bin/node_exporter --collector.textfile.directory=/local/notesdata/domino/stats
+
+StandardOutput=file:/tmp/node_exporter.log
+StandardError=file:/tmp/node_exporter_error.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+chown root:root "$SYSTEMD_FILEPATH"
+chmod 0644 "$SYSTEMD_FILEPATH"
 
 systemctl daemon-reload
 log "Starting Node Exporter service ..."

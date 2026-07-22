@@ -1,34 +1,22 @@
 ###########################################################################
-# systemd Service - Prometheus Node Exporter                              #
-# Version 1.0.2 24.12.2025                                                #
-#                                                                         #
-# (C) Copyright Daniel Nashed/NashCom 2024-2025                           #
-# Feedback domino_unix@nashcom.de                                         #
-#                                                                         #
-# Licensed under the Apache License, Version 2.0 (the "License");         #
-# you may not use this file except in compliance with the License.        #
-# You may obtain a copy of the License at                                 #
-#                                                                         #
-#      http://www.apache.org/licenses/LICENSE-2.0                         #
-#                                                                         #
-# Unless required by applicable law or agreed to in writing, software     #
-# distributed under the License is distributed on an "AS IS" BASIS,       #
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.#
-# See the License for the specific language governing permissions and     #
-# limitations under the License.                                          #
+# Prometheus Node Exporter systemd service
+# Version 1.0.3 (2026-07-22)
+#
+# Copyright (c) 2024-2026 Daniel Nashed / NashCom
+# SPDX-License-Identifier: Apache-2.0
 ###########################################################################
 
 [Unit]
-
 Description=Prometheus Node Exporter
-After=syslog.target network.target
+After=network.target
 
 [Service]
 Type=exec
 User=notes
 
-# Make sure this directory matches your configuration. The default directory for .prom files to collect is /local/notesdata/domino/stats
+# Default directory for textfile collector (.prom files)
 ExecStart=/usr/local/bin/node_exporter --collector.textfile.directory=/local/notesdata/domino/stats
+
 StandardOutput=file:/tmp/node_exporter.log
 StandardError=file:/tmp/node_exporter_error.log
 
